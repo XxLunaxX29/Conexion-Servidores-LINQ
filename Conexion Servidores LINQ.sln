@@ -1,0 +1,25 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36915.13 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "Conexion Servidores LINQ", "Conexion Servidores LINQ\Conexion Servidores LINQ.csproj", "{7B0E0C12-888B-4A28-9DB2-A1FD76B2A377}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{7B0E0C12-888B-4A28-9DB2-A1FD76B2A377}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{7B0E0C12-888B-4A28-9DB2-A1FD76B2A377}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{7B0E0C12-888B-4A28-9DB2-A1FD76B2A377}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{7B0E0C12-888B-4A28-9DB2-A1FD76B2A377}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {1A179EAC-C40F-4F2A-ABD4-B8E2507B4BCA}
+	EndGlobalSection
+EndGlobal
