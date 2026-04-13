@@ -40,21 +40,42 @@ namespace Conexion_Servidores_LINQ
 
                 Console.WriteLine("? Parseando contenido JSON...");
 
+                // Parsear el JSON
                 using (JsonDocument doc = JsonDocument.Parse(jsonContent))
                 {
                     JsonElement root = doc.RootElement;
-                    
-                    // LINQ: Detectar si es un array o un objeto único
-                    var elementos = root.ValueKind == JsonValueKind.Array
-                        ? root.EnumerateArray().ToList()
-                        : ExtraerArrayDelObjeto(root);
+                    List<JsonElement> elementos = new List<JsonElement>();
+
+                    // Detectar si es un array o un objeto único
+                    if (root.ValueKind == JsonValueKind.Array)
+                    {
+                        elementos = root.EnumerateArray().ToList();
+                    }
+                    else if (root.ValueKind == JsonValueKind.Object)
+                    {
+                        // Buscar arrays dentro del objeto
+                        var arrayProperties = root.EnumerateObject()
+                            .Where(p => p.Value.ValueKind == JsonValueKind.Array)
+                            .ToList();
+
+                        if (arrayProperties.Count > 0)
+                        {
+                            // Usar el primer array encontrado
+                            elementos = arrayProperties[0].Value.EnumerateArray().ToList();
+                        }
+                        else
+                        {
+                            // Si no hay arrays, tratar el objeto como un único registro
+                            elementos.Add(root);
+                        }
+                    }
 
                     if (elementos.Count == 0)
                         throw new InvalidOperationException("No se encontraron elementos en el JSON.");
 
                     Console.WriteLine($"? Se encontraron {elementos.Count} elementos");
 
-                    // LINQ: Extraer todas las claves (columnas) ordenadas
+                    // Extraer todas las claves (columnas)
                     Console.WriteLine("? Extrayendo columnas...");
                     var todasLasClaves = ExtraerTodasLasClaves(elementos);
 
@@ -79,22 +100,25 @@ namespace Conexion_Servidores_LINQ
                             continue;
 
                         filasEnProceso++;
-                        
-                        // LINQ: Crear datos de fila
-                        var rowData = todasLasClaves
-                            .Select(clave => ObtenerValor(elemento, clave))
-                            .ToArray();
-                        
-                        var rowHash = string.Join("|", rowData);
+                        var rowData = new List<string>();
+                        var rowHash = "";
+
+                        foreach (var clave in todasLasClaves)
+                        {
+                            string valor = ObtenerValor(elemento, clave);
+                            rowData.Add(valor);
+                            rowHash += valor + "|";
+                        }
 
                         // Evitar duplicados
                         if (!filasAgregadas.Contains(rowHash))
                         {
-                            _dataTable.Rows.Add(rowData);
+                            _dataTable.Rows.Add(rowData.ToArray());
                             filasAgregadas.Add(rowHash);
                             filasValidas++;
                         }
 
+                        // Mostrar progreso cada 10 filas
                         if (filasEnProceso % 10 == 0)
                         {
                             Console.Write($"\r? Procesadas {filasEnProceso} filas | Agregadas {filasValidas} filas");
@@ -122,29 +146,24 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Extrae array del objeto root usando LINQ.
-        /// </summary>
-        private List<JsonElement> ExtraerArrayDelObjeto(JsonElement root)
-        {
-            var arrayProperty = root.EnumerateObject()
-                .FirstOrDefault(p => p.Value.ValueKind == JsonValueKind.Array);
-
-            return arrayProperty.Value.ValueKind == JsonValueKind.Array
-                ? arrayProperty.Value.EnumerateArray().ToList()
-                : new List<JsonElement>();
-        }
-
-        /// <summary>
-        /// Extrae todas las claves únicas del conjunto de elementos JSON usando LINQ.
+        /// Extrae todas las claves únicas del conjunto de elementos JSON.
         /// </summary>
         private List<string> ExtraerTodasLasClaves(List<JsonElement> elementos)
         {
-            return elementos
-                .Where(e => e.ValueKind == JsonValueKind.Object)
-                .SelectMany(e => e.EnumerateObject().Select(p => p.Name))
-                .Distinct()
-                .OrderBy(c => c)
-                .ToList();
+            var claves = new HashSet<string>();
+
+            foreach (var elemento in elementos)
+            {
+                if (elemento.ValueKind != JsonValueKind.Object)
+                    continue;
+
+                foreach (var propiedad in elemento.EnumerateObject())
+                {
+                    claves.Add(propiedad.Name);
+                }
+            }
+
+            return claves.OrderBy(c => c).ToList();
         }
 
         /// <summary>
@@ -152,9 +171,18 @@ namespace Conexion_Servidores_LINQ
         /// </summary>
         private string ObtenerValor(JsonElement elemento, string nombrePropiedad)
         {
-            return elemento.TryGetProperty(nombrePropiedad, out JsonElement propiedad)
-                ? ConvertirValorJson(propiedad)
-                : string.Empty;
+            try
+            {
+                if (elemento.TryGetProperty(nombrePropiedad, out JsonElement propiedad))
+                {
+                    return ConvertirValorJson(propiedad);
+                }
+                return string.Empty;
+            }
+            catch
+            {
+                return string.Empty;
+            }
         }
 
         /// <summary>
@@ -162,42 +190,63 @@ namespace Conexion_Servidores_LINQ
         /// </summary>
         private string ConvertirValorJson(JsonElement elemento)
         {
-            return elemento.ValueKind switch
+            switch (elemento.ValueKind)
             {
-                JsonValueKind.String => elemento.GetString() ?? string.Empty,
-                
-                JsonValueKind.Number => elemento.TryGetInt32(out int intValue)
-                    ? intValue.ToString()
-                    : elemento.TryGetInt64(out long longValue)
-                    ? longValue.ToString()
-                    : elemento.TryGetDouble(out double doubleValue)
-                    ? doubleValue.ToString()
-                    : elemento.ToString(),
-                
-                JsonValueKind.True => "true",
-                JsonValueKind.False => "false",
-                JsonValueKind.Null => string.Empty,
-                
-                JsonValueKind.Array => string.Join("; ", elemento.EnumerateArray()
-                    .Select(e => ConvertirValorJson(e))
-                    .Where(s => !string.IsNullOrEmpty(s))),
-                
-                JsonValueKind.Object => "{" + string.Join(", ", elemento.EnumerateObject()
-                    .Select(p => $"{p.Name}: {ConvertirValorJson(p.Value)}")) + "}",
-                
-                _ => string.Empty
-            };
+                case JsonValueKind.String:
+                    return elemento.GetString() ?? string.Empty;
+
+                case JsonValueKind.Number:
+                    if (elemento.TryGetInt32(out int intValue))
+                        return intValue.ToString();
+                    if (elemento.TryGetInt64(out long longValue))
+                        return longValue.ToString();
+                    if (elemento.TryGetDouble(out double doubleValue))
+                        return doubleValue.ToString();
+                    return elemento.ToString();
+
+                case JsonValueKind.True:
+                    return "true";
+
+                case JsonValueKind.False:
+                    return "false";
+
+                case JsonValueKind.Null:
+                    return string.Empty;
+
+                case JsonValueKind.Array:
+                    var items = elemento.EnumerateArray()
+                        .Select(e => ConvertirValorJson(e))
+                        .Where(s => !string.IsNullOrEmpty(s))
+                        .ToList();
+                    return string.Join("; ", items);
+
+                case JsonValueKind.Object:
+                    // Para objetos anidados, crear una representación simple
+                    var propiedades = elemento.EnumerateObject()
+                        .Select(p => $"{p.Name}: {ConvertirValorJson(p.Value)}")
+                        .ToList();
+                    return "{" + string.Join(", ", propiedades) + "}";
+
+                default:
+                    return string.Empty;
+            }
         }
 
         /// <summary>
-        /// Elimina columnas que están completamente vacías usando LINQ.
+        /// Elimina columnas que están completamente vacías.
         /// </summary>
         private void RemoverColumnasVacias()
         {
-            var columnasVacias = _dataTable.Columns.Cast<DataColumn>()
-                .Where(column => _dataTable.AsEnumerable()
-                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString())))
-                .ToList();
+            var columnasVacias = new List<DataColumn>();
+
+            foreach (DataColumn column in _dataTable.Columns)
+            {
+                bool estaVacia = _dataTable.AsEnumerable()
+                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString()));
+
+                if (estaVacia)
+                    columnasVacias.Add(column);
+            }
 
             foreach (var column in columnasVacias)
             {
@@ -214,7 +263,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Exporta la tabla a un archivo CSV usando LINQ.
+        /// Exporta la tabla a un archivo CSV.
         /// </summary>
         /// <param name="csvFilePath">Ruta del archivo CSV a guardar</param>
         public void ExportToCsv(string csvFilePath)
@@ -223,14 +272,15 @@ namespace Conexion_Servidores_LINQ
             {
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
-                    // LINQ: Escribir encabezados
-                    var headers = string.Join(",", _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName));
-                    writer.WriteLine(headers);
+                    // Escribir encabezados
+                    var headers = _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
+                    writer.WriteLine(string.Join(",", headers));
 
-                    // LINQ: Escribir datos
+                    // Escribir datos
                     foreach (DataRow row in _dataTable.Rows)
                     {
-                        writer.WriteLine(string.Join(",", row.ItemArray.Select(v => $"\"{v}\"")));
+                        var values = row.ItemArray.Select(v => $"\"{v}\"");
+                        writer.WriteLine(string.Join(",", values));
                     }
                 }
 
@@ -244,7 +294,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Muestra la tabla en la consola de forma formateada usando LINQ.
+        /// Muestra la tabla en la consola de forma formateada.
         /// </summary>
         public void DisplayTable()
         {
@@ -258,21 +308,22 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine($"Total de filas: {_dataTable.Rows.Count}");
             Console.WriteLine(new string('=', 80));
 
-            // LINQ: Mostrar encabezados
-            var headers = string.Join("| ", _dataTable.Columns.Cast<DataColumn>()
-                .Select(c => c.ColumnName.PadRight(20)));
-            Console.WriteLine(headers);
+            // Mostrar encabezados
+            foreach (DataColumn column in _dataTable.Columns)
+            {
+                Console.Write(column.ColumnName.PadRight(20) + "| ");
+            }
+            Console.WriteLine();
             Console.WriteLine(new string('-', 80));
 
-            // LINQ: Mostrar datos
+            // Mostrar datos
             foreach (DataRow row in _dataTable.Rows)
             {
-                Console.WriteLine(string.Join("| ", row.ItemArray
-                    .Select(cell =>
-                    {
-                        string cellValue = cell.ToString();
-                        return cellValue.Length > 20 ? cellValue.Substring(0, 17) + "..." : cellValue.PadRight(20);
-                    })));
+                foreach (var cell in row.ItemArray)
+                {
+                    Console.Write(cell.ToString().PadRight(20).Substring(0, 20) + "| ");
+                }
+                Console.WriteLine();
             }
 
             Console.WriteLine(new string('=', 80));

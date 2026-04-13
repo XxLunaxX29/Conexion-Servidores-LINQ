@@ -4,7 +4,7 @@ using System.Data;
 using System.Dynamic;
 using System.Linq;
 
-namespace ConexionServidores
+namespace Conexion_Servidores_LINQ
 {
     /// <summary>
     /// Clase que gestiona datos de un DataTable usando List<T> y Dictionary para acceso optimizado.
@@ -12,7 +12,7 @@ namespace ConexionServidores
     public class DatasetManager
     {
         private List<dynamic> _datos;
-        private Dictionary<string, List<int>> _indicesPorColumna;
+        private Dictionary<string, List<int>> _indicesPorColumna; // Almacena índices en lugar de objetos
         private DataTable _dataTable;
         private string _nombreDataset;
 
@@ -38,35 +38,43 @@ namespace ConexionServidores
             Console.WriteLine($"\n? Cargando datos del DataTable en memoria...");
             Console.WriteLine($"? Total de filas: {dataTable.Rows.Count} | Columnas: {dataTable.Columns.Count}");
 
-            // LINQ: Convertir cada fila del DataTable a un objeto dinámico
+            // Convertir cada fila del DataTable a un objeto dinámico
             int filasAgregadas = 0;
-            foreach (DataRow row in dataTable.Rows)
-            {
-                var diccionarioFila = dataTable.Columns.Cast<DataColumn>()
-                    .ToDictionary(column => column.ColumnName, column => row[column]);
 
+            for (int i = 0; i < dataTable.Rows.Count; i++)
+            {
+                DataRow row = dataTable.Rows[i];
+                var diccionarioFila = new Dictionary<string, object>();
+
+                foreach (DataColumn column in dataTable.Columns)
+                {
+                    diccionarioFila[column.ColumnName] = row[column];
+                }
+
+                // Convertir a un objeto dinámico (ExpandoObject)
                 var objeto = ConvertirDiccionarioAObjeto(diccionarioFila);
                 _datos.Add(objeto);
+                filasAgregadas++;
 
                 // Agregar al índice por cada columna
-                foreach (var kvp in diccionarioFila)
+                foreach (var columna in dataTable.Columns.Cast<DataColumn>())
                 {
-                    string clave = $"{kvp.Key}:{kvp.Value}";
+                    string clave = $"{columna.ColumnName}:{row[columna]}";
+
                     if (!_indicesPorColumna.ContainsKey(clave))
                     {
                         _indicesPorColumna[clave] = new List<int>();
                     }
-                    _indicesPorColumna[clave].Add(filasAgregadas);
+                    _indicesPorColumna[clave].Add(i); // Almacenar índice
                 }
 
-                filasAgregadas++;
                 if (filasAgregadas % 100 == 0)
                 {
                     Console.Write($"\r? Procesadas {filasAgregadas} filas...");
                 }
             }
 
-            Console.WriteLine($"\r? Carga completada: {_datos.Count} filas almacenadas en memoria");
+            Console.WriteLine($"\r? Carga completada: {filasAgregadas} filas almacenadas en memoria");
         }
 
         /// <summary>
@@ -108,54 +116,89 @@ namespace ConexionServidores
         {
             string clave = $"{nombreColumna}:{valor}";
 
-            return _indicesPorColumna.ContainsKey(clave)
-                ? _indicesPorColumna[clave].Select(i => _datos[i]).ToList()
-                : new List<dynamic>();
+            if (_indicesPorColumna.ContainsKey(clave))
+            {
+                var indices = _indicesPorColumna[clave];
+                return indices.Select(i => _datos[i]).ToList();
+            }
+
+            return new List<dynamic>();
         }
 
         /// <summary>
-        /// Busca datos que contengan un valor en una columna (búsqueda parcial) usando LINQ.
+        /// Busca datos que contengan un valor en una columna (búsqueda parcial).
         /// </summary>
         public List<dynamic> BuscarPorColumnaContiene(string nombreColumna, string valor)
         {
-            return _datos
-                .Where(item => ((ExpandoObject)item).Cast<KeyValuePair<string, object>>()
-                    .Any(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase) &&
-                        p.Value?.ToString()?.Contains(valor, StringComparison.OrdinalIgnoreCase) == true))
-                .ToList();
+            var resultado = new List<dynamic>();
+
+            foreach (var item in _datos)
+            {
+                var propiedades = ((ExpandoObject)item).Cast<KeyValuePair<string, object>>();
+
+                if (propiedades.Any(p =>
+                    p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase) &&
+                    p.Value?.ToString()?.Contains(valor, StringComparison.OrdinalIgnoreCase) == true))
+                {
+                    resultado.Add(item);
+                }
+            }
+
+            return resultado;
         }
 
         /// <summary>
-        /// Obtiene valores únicos de una columna usando LINQ.
+        /// Obtiene valores únicos de una columna.
         /// </summary>
         public List<object> ObtenerValoresUnicos(string nombreColumna)
         {
-            return _datos
-                .Select(item => ((ExpandoObject)item).Cast<KeyValuePair<string, object>>()
-                    .FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase)).Value)
-                .Where(valor => valor != null)
-                .Distinct()
-                .ToList();
+            var valoresUnicos = new HashSet<object>();
+
+            foreach (var item in _datos)
+            {
+                var propiedades = ((ExpandoObject)item).Cast<KeyValuePair<string, object>>();
+                var valor = propiedades.FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase)).Value;
+
+                if (valor != null)
+                {
+                    valoresUnicos.Add(valor);
+                }
+            }
+
+            return valoresUnicos.ToList();
         }
 
         /// <summary>
-        /// Agrupa datos por una columna específica usando LINQ.
+        /// Agrupa datos por una columna específica.
         /// </summary>
         public Dictionary<object, List<dynamic>> AgruparPor(string nombreColumna)
         {
-            return _datos
-                .GroupBy(item => ((ExpandoObject)item).Cast<KeyValuePair<string, object>>()
-                    .FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase)).Value)
-                .Where(g => g.Key != null)
-                .ToDictionary(g => g.Key, g => g.ToList());
+            var grupos = new Dictionary<object, List<dynamic>>();
+
+            foreach (var item in _datos)
+            {
+                var propiedades = ((ExpandoObject)item).Cast<KeyValuePair<string, object>>();
+                var clave = propiedades.FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase)).Value;
+
+                if (clave != null)
+                {
+                    if (!grupos.ContainsKey(clave))
+                    {
+                        grupos[clave] = new List<dynamic>();
+                    }
+                    grupos[clave].Add(item);
+                }
+            }
+
+            return grupos;
         }
 
         /// <summary>
-        /// Obtiene estadísticas sobre los datos cargados usando LINQ.
+        /// Obtiene estadísticas sobre los datos cargados.
         /// </summary>
         public Dictionary<string, object> ObtenerEstadisticas()
         {
-            return new Dictionary<string, object>
+            var estadisticas = new Dictionary<string, object>
             {
                 { "TotalRegistros", _datos.Count },
                 { "TotalColumnas", _dataTable?.Columns.Count ?? 0 },
@@ -163,6 +206,8 @@ namespace ConexionServidores
                 { "TotalClaves", _indicesPorColumna.Count },
                 { "MemoriaAproximada", ObtenerTamanoMemoria() }
             };
+
+            return estadisticas;
         }
 
         /// <summary>
@@ -172,15 +217,16 @@ namespace ConexionServidores
         {
             long bytes = GC.GetTotalMemory(false);
 
-            return bytes < 1024
-                ? $"{bytes} B"
-                : bytes < 1024 * 1024
-                ? $"{bytes / 1024} KB"
-                : $"{bytes / (1024 * 1024)} MB";
+            if (bytes < 1024)
+                return $"{bytes} B";
+            else if (bytes < 1024 * 1024)
+                return $"{bytes / 1024} KB";
+            else
+                return $"{bytes / (1024 * 1024)} MB";
         }
 
         /// <summary>
-        /// Filtra datos usando un predicado usando LINQ.
+        /// Filtra datos usando un predicado.
         /// </summary>
         public List<dynamic> Filtrar(Func<dynamic, bool> predicado)
         {
@@ -188,46 +234,35 @@ namespace ConexionServidores
         }
 
         /// <summary>
-        /// Ordena datos por una columna específica usando LINQ.
+        /// Ordena datos por una columna específica.
         /// </summary>
         public List<dynamic> Ordenar(string nombreColumna, bool descendente = false)
         {
-            return descendente
-                ? _datos
-                    .OrderByDescending(item => ObtenerValorColumna(item, nombreColumna))
-                    .ToList()
-                : _datos
-                    .OrderBy(item => ObtenerValorColumna(item, nombreColumna))
-                    .ToList();
+            var resultado = new List<dynamic>(_datos);
+
+            resultado.Sort((a, b) =>
+            {
+                var propiedadesA = ((ExpandoObject)a).Cast<KeyValuePair<string, object>>();
+                var propiedadesB = ((ExpandoObject)b).Cast<KeyValuePair<string, object>>();
+
+                var valorA = propiedadesA.FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase)).Value;
+                var valorB = propiedadesB.FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase)).Value;
+
+                int comparacion = ((IComparable)valorA)?.CompareTo(valorB) ?? 0;
+
+                return descendente ? -comparacion : comparacion;
+            });
+
+            return resultado;
         }
 
         /// <summary>
-        /// Obtiene el valor de una columna de un objeto dinámico.
-        /// </summary>
-        private object ObtenerValorColumna(dynamic item, string nombreColumna)
-        {
-            try
-            {
-                var propiedades = ((ExpandoObject)item).Cast<KeyValuePair<string, object>>();
-                return propiedades
-                    .FirstOrDefault(p => p.Key.Equals(nombreColumna, StringComparison.OrdinalIgnoreCase))
-                    .Value ?? 0;
-            }
-            catch
-            {
-                return 0;
-            }
-        }
-
-        /// <summary>
-        /// Obtiene un resumen de los datos con paginación usando LINQ.
+        /// Obtiene un resumen de los datos con paginación.
         /// </summary>
         public List<dynamic> ObtenerPaginado(int numeroPagina, int registrosPorPagina)
         {
-            return _datos
-                .Skip((numeroPagina - 1) * registrosPorPagina)
-                .Take(registrosPorPagina)
-                .ToList();
+            int salto = (numeroPagina - 1) * registrosPorPagina;
+            return _datos.Skip(salto).Take(registrosPorPagina).ToList();
         }
 
         /// <summary>
@@ -249,17 +284,15 @@ namespace ConexionServidores
             if (estadisticas["NombresColumnas"] is List<string> columnas)
             {
                 Console.WriteLine("\nColumnas disponibles:");
-                int indice = 1;
-                foreach (var col in columnas)
+                for (int i = 0; i < columnas.Count; i++)
                 {
-                    Console.WriteLine($"  {indice}. {col}");
-                    indice++;
+                    Console.WriteLine($"  {i + 1}. {columnas[i]}");
                 }
             }
         }
 
         /// <summary>
-        /// Exporta los datos filtrados a un nuevo DataTable usando LINQ.
+        /// Exporta los datos filtrados a un nuevo DataTable.
         /// </summary>
         public DataTable ExportarADataTable(List<dynamic> datos)
         {
@@ -276,7 +309,7 @@ namespace ConexionServidores
                 dataTable.Columns.Add(prop.Key, typeof(object));
             }
 
-            // LINQ: Llenar las filas
+            // Llenar las filas
             foreach (var item in datos)
             {
                 var propiedades = ((ExpandoObject)item).Cast<KeyValuePair<string, object>>().ToArray();

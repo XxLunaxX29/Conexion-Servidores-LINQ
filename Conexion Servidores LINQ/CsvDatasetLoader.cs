@@ -46,15 +46,16 @@ namespace Conexion_Servidores_LINQ
                     ? ParsearLinea(lineas[0])
                     : GenerarEncabezadosAutomaticos(ParsearLinea(lineas[0]).Length);
 
-                // LINQ: Crear columnas filtrando valores vacíos
-                foreach (var encabezado in encabezados.Where(e => !string.IsNullOrWhiteSpace(e)))
+                // Crear columnas
+                foreach (var encabezado in encabezados)
                 {
-                    _dataTable.Columns.Add(encabezado.Trim(), typeof(string));
+                    if (!string.IsNullOrWhiteSpace(encabezado))
+                        _dataTable.Columns.Add(encabezado.Trim(), typeof(string));
                 }
 
-                Console.WriteLine($"? Se crearon {_dataTable.Columns.Count} columnas");
+                Console.WriteLine($"? Se crearon {encabezados.Length} columnas");
 
-                // LINQ: Procesar datos y eliminar duplicados
+                // Procesar datos y eliminar duplicados
                 var addedRows = new HashSet<string>();
                 int inicio = tieneEncabezado ? 1 : 0;
                 int filasEnProceso = 0;
@@ -62,18 +63,19 @@ namespace Conexion_Servidores_LINQ
 
                 Console.WriteLine("? Procesando filas de datos...\n");
 
-                // LINQ: Procesar líneas de datos
                 for (int i = inicio; i < lineas.Length; i++)
                 {
                     filasEnProceso++;
-                    var valores = ParsearLinea(lineas[i]);
+                    string[] valores = ParsearLinea(lineas[i]);
 
+                    // Asegurar que tiene el mismo número de columnas
                     if (valores.Length != encabezados.Length)
                         continue;
 
                     var rowData = valores.Select(v => v.Trim()).ToArray();
                     var rowHash = string.Join("|", rowData);
 
+                    // Evitar duplicados
                     if (!addedRows.Contains(rowHash))
                     {
                         _dataTable.Rows.Add(rowData);
@@ -81,6 +83,7 @@ namespace Conexion_Servidores_LINQ
                         filasAgregadas++;
                     }
 
+                    // Mostrar progreso cada 10 filas
                     if (filasEnProceso % 10 == 0)
                     {
                         Console.Write($"\r? Procesadas {filasEnProceso} filas | Agregadas {filasAgregadas} filas");
@@ -132,7 +135,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Genera encabezados automáticos usando LINQ.
+        /// Genera encabezados automáticos (Columna1, Columna2, etc.)
         /// </summary>
         private string[] GenerarEncabezadosAutomaticos(int cantidad)
         {
@@ -142,14 +145,20 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Elimina columnas que están completamente vacías usando LINQ.
+        /// Elimina columnas que están completamente vacías.
         /// </summary>
         private void RemoverColumnasVacias()
         {
-            var columnasVacias = _dataTable.Columns.Cast<DataColumn>()
-                .Where(column => _dataTable.AsEnumerable()
-                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString())))
-                .ToList();
+            var columnasVacias = new List<DataColumn>();
+
+            foreach (DataColumn column in _dataTable.Columns)
+            {
+                bool estaVacia = _dataTable.AsEnumerable()
+                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString()));
+
+                if (estaVacia)
+                    columnasVacias.Add(column);
+            }
 
             foreach (var column in columnasVacias)
             {
@@ -166,7 +175,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Exporta la tabla a un archivo CSV usando LINQ.
+        /// Exporta la tabla a un archivo CSV.
         /// </summary>
         /// <param name="csvFilePath">Ruta del archivo CSV a guardar</param>
         public void ExportToCsv(string csvFilePath)
@@ -175,14 +184,15 @@ namespace Conexion_Servidores_LINQ
             {
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
-                    // LINQ: Escribir encabezados
-                    var headers = string.Join(",", _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName));
-                    writer.WriteLine(headers);
+                    // Escribir encabezados
+                    var headers = _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
+                    writer.WriteLine(string.Join(",", headers));
 
-                    // LINQ: Escribir datos
+                    // Escribir datos
                     foreach (DataRow row in _dataTable.Rows)
                     {
-                        writer.WriteLine(string.Join(",", row.ItemArray.Select(v => $"\"{v}\"")));
+                        var values = row.ItemArray.Select(v => $"\"{v}\"");
+                        writer.WriteLine(string.Join(",", values));
                     }
                 }
 
@@ -196,7 +206,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Muestra la tabla en la consola de forma formateada usando LINQ.
+        /// Muestra la tabla en la consola de forma formateada.
         /// </summary>
         public void DisplayTable()
         {
@@ -210,21 +220,22 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine($"Total de filas: {_dataTable.Rows.Count}");
             Console.WriteLine(new string('=', 80));
 
-            // LINQ: Mostrar encabezados
-            var headers = string.Join("| ", _dataTable.Columns.Cast<DataColumn>()
-                .Select(c => c.ColumnName.PadRight(20)));
-            Console.WriteLine(headers);
+            // Mostrar encabezados
+            foreach (DataColumn column in _dataTable.Columns)
+            {
+                Console.Write(column.ColumnName.PadRight(20) + "| ");
+            }
+            Console.WriteLine();
             Console.WriteLine(new string('-', 80));
 
-            // LINQ: Mostrar datos
+            // Mostrar datos
             foreach (DataRow row in _dataTable.Rows)
             {
-                Console.WriteLine(string.Join("| ", row.ItemArray
-                    .Select(cell =>
-                    {
-                        string cellValue = cell.ToString();
-                        return cellValue.Length > 20 ? cellValue.Substring(0, 17) + "..." : cellValue.PadRight(20);
-                    })));
+                foreach (var cell in row.ItemArray)
+                {
+                    Console.Write(cell.ToString().PadRight(20).Substring(0, 20) + "| ");
+                }
+                Console.WriteLine();
             }
 
             Console.WriteLine(new string('=', 80));

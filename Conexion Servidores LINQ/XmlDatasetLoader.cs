@@ -1,10 +1,10 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Linq;
 using System.Xml.Linq;
+using System.Linq;
 
-namespace Conexion_Servidores_LINQ
+namespace ConexionServidores
 {
     /// <summary>
     /// Clase que carga archivos XML y los estructura en una tabla evitando duplicados y columnas vacías.
@@ -35,7 +35,7 @@ namespace Conexion_Servidores_LINQ
                 var xmlDoc = XDocument.Load(xmlFilePath);
                 _dataTable = new DataTable();
 
-                // LINQ: Obtener elementos con Where
+                // Obtener elementos con LINQ
                 var elements = xmlDoc.Descendants()
                     .Where(e => e.Name.LocalName == elementName)
                     .ToList();
@@ -45,11 +45,11 @@ namespace Conexion_Servidores_LINQ
 
                 Console.WriteLine($"? Se encontraron {elements.Count} elementos XML");
 
-                // LINQ: Obtener todas las columnas posibles
+                // Obtener todas las columnas posibles
                 Console.WriteLine("? Extrayendo columnas...");
                 var allColumns = ExtractAllColumns(elements);
 
-                // LINQ: Ordenar columnas alfabéticamente con OrderBy
+                // Ordenar columnas alfabéticamente con LINQ
                 var sortedColumns = allColumns.OrderBy(c => c).ToList();
 
                 // Crear columnas en la tabla
@@ -70,12 +70,10 @@ namespace Conexion_Servidores_LINQ
                 foreach (var element in elements)
                 {
                     filasEnProceso++;
-                    
-                    // LINQ: Crear hash de fila de manera más eficiente
                     var rowData = sortedColumns
-                        .Select(col => GetElementValue(element, col))
+                        .Select(column => GetElementValue(element, column))
                         .ToList();
-
+                    
                     var rowHash = string.Join("|", rowData);
 
                     // Verificar si la fila ya existe (evitar duplicados)
@@ -105,17 +103,19 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Extrae todas las columnas únicas del conjunto de elementos XML usando LINQ.
+        /// Extrae todas las columnas únicas del conjunto de elementos XML.
         /// </summary>
         private List<string> ExtractAllColumns(List<XElement> elements)
         {
-            return elements
+            var columns = elements
                 .SelectMany(element => element.Attributes()
                     .Select(attr => attr.Name.LocalName)
                     .Concat(element.Elements()
                         .Select(child => child.Name.LocalName)))
                 .Distinct()
                 .ToList();
+
+            return columns;
         }
 
         /// <summary>
@@ -145,7 +145,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Exporta la tabla a un archivo CSV usando LINQ.
+        /// Exporta la tabla a un archivo CSV.
         /// </summary>
         /// <param name="csvFilePath">Ruta del archivo CSV a guardar</param>
         public void ExportToCsv(string csvFilePath)
@@ -154,14 +154,15 @@ namespace Conexion_Servidores_LINQ
             {
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
-                    // LINQ: Escribir encabezados
-                    var headers = string.Join(",", _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName));
-                    writer.WriteLine(headers);
+                    // Escribir encabezados
+                    var headers = _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
+                    writer.WriteLine(string.Join(",", headers));
 
-                    // LINQ: Escribir datos
+                    // Escribir datos
                     foreach (DataRow row in _dataTable.Rows)
                     {
-                        writer.WriteLine(string.Join(",", row.ItemArray.Select(v => $"\"{v}\"")));
+                        var values = row.ItemArray.Select(v => $"\"{v}\"");
+                        writer.WriteLine(string.Join(",", values));
                     }
                 }
 
@@ -175,7 +176,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Muestra la tabla en la consola de forma formateada usando LINQ.
+        /// Muestra la tabla en la consola de forma formateada.
         /// </summary>
         public void DisplayTable()
         {
@@ -189,21 +190,25 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine($"Total de filas: {_dataTable.Rows.Count}");
             Console.WriteLine(new string('=', 80));
 
-            // LINQ: Mostrar encabezados
-            var headers = string.Join("| ", _dataTable.Columns.Cast<DataColumn>()
-                .Select(c => c.ColumnName.PadRight(20)));
-            Console.WriteLine(headers);
+            // Mostrar encabezados
+            foreach (DataColumn column in _dataTable.Columns)
+            {
+                Console.Write(column.ColumnName.PadRight(20) + "| ");
+            }
+            Console.WriteLine();
             Console.WriteLine(new string('-', 80));
 
-            // LINQ: Mostrar datos
+            // Mostrar datos
             foreach (DataRow row in _dataTable.Rows)
             {
-                Console.WriteLine(string.Join("| ", row.ItemArray
-                    .Select(cell =>
-                    {
-                        string cellValue = cell.ToString();
-                        return cellValue.Length > 20 ? cellValue.Substring(0, 17) + "..." : cellValue.PadRight(20);
-                    })));
+                foreach (var cell in row.ItemArray)
+                {
+                    string cellValue = cell.ToString();
+                    if (cellValue.Length > 20)
+                        cellValue = cellValue.Substring(0, 17) + "...";
+                    Console.Write(cellValue.PadRight(20) + "| ");
+                }
+                Console.WriteLine();
             }
 
             Console.WriteLine(new string('=', 80));
