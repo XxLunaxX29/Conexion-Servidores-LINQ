@@ -8,6 +8,7 @@ namespace Conexion_Servidores_LINQ
 {
     /// <summary>
     /// Clase que carga archivos CSV y los estructura en una tabla evitando duplicados y columnas vacías.
+    /// Utiliza LINQ para búsqueda, ordenamiento y extracción de datos.
     /// </summary>
     public class CsvDatasetLoader
     {
@@ -20,6 +21,7 @@ namespace Conexion_Servidores_LINQ
 
         /// <summary>
         /// Carga un archivo CSV y lo convierte en una tabla de datos limpia.
+        /// Utiliza LINQ para procesar encabezados y validaciones.
         /// </summary>
         /// <param name="csvFilePath">Ruta del archivo CSV</param>
         /// <param name="tieneEncabezado">Indica si la primera fila contiene encabezados</param>
@@ -46,14 +48,13 @@ namespace Conexion_Servidores_LINQ
                     ? ParsearLinea(lineas[0])
                     : GenerarEncabezadosAutomaticos(ParsearLinea(lineas[0]).Length);
 
-                // Crear columnas
-                foreach (var encabezado in encabezados)
-                {
-                    if (!string.IsNullOrWhiteSpace(encabezado))
-                        _dataTable.Columns.Add(encabezado.Trim(), typeof(string));
-                }
+                // Crear columnas usando LINQ - Convertir a List antes de ForEach
+                encabezados
+                    .Where(encabezado => !string.IsNullOrWhiteSpace(encabezado))
+                    .ToList()
+                    .ForEach(encabezado => _dataTable.Columns.Add(encabezado.Trim(), typeof(string)));
 
-                Console.WriteLine($"? Se crearon {encabezados.Length} columnas");
+                Console.WriteLine($"? Se crearon {_dataTable.Columns.Count} columnas");
 
                 // Procesar datos y eliminar duplicados
                 var addedRows = new HashSet<string>();
@@ -135,7 +136,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Genera encabezados automáticos (Columna1, Columna2, etc.)
+        /// Genera encabezados automáticos (Columna1, Columna2, etc.) usando LINQ.
         /// </summary>
         private string[] GenerarEncabezadosAutomaticos(int cantidad)
         {
@@ -145,25 +146,15 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Elimina columnas que están completamente vacías.
+        /// Elimina columnas que están completamente vacías usando LINQ.
         /// </summary>
         private void RemoverColumnasVacias()
         {
-            var columnasVacias = new List<DataColumn>();
-
-            foreach (DataColumn column in _dataTable.Columns)
-            {
-                bool estaVacia = _dataTable.AsEnumerable()
-                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString()));
-
-                if (estaVacia)
-                    columnasVacias.Add(column);
-            }
-
-            foreach (var column in columnasVacias)
-            {
-                _dataTable.Columns.Remove(column);
-            }
+            _dataTable.Columns.Cast<DataColumn>()
+                .Where(column => _dataTable.AsEnumerable()
+                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString())))
+                .ToList()
+                .ForEach(column => _dataTable.Columns.Remove(column));
         }
 
         /// <summary>
@@ -175,7 +166,246 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Exporta la tabla a un archivo CSV.
+        /// Filtra filas de la tabla usando LINQ .Where().
+        /// </summary>
+        /// <param name="columnName">Nombre de la columna a filtrar</param>
+        /// <param name="filterValue">Valor o patrón a buscar</param>
+        /// <param name="exactMatch">Si es true, busca coincidencia exacta; si es false, busca coincidencia parcial</param>
+        /// <returns>DataTable filtrado</returns>
+        public DataTable FilterByColumn(string columnName, string filterValue, bool exactMatch = false)
+        {
+            try
+            {
+                if (!_dataTable.Columns.Contains(columnName))
+                    throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+
+                if (string.IsNullOrWhiteSpace(filterValue))
+                    throw new ArgumentException("El valor de filtro no puede estar vacío.");
+
+                var filteredRows = exactMatch
+                    ? _dataTable.AsEnumerable()
+                        .Where(row => row[columnName].ToString().Equals(filterValue, StringComparison.OrdinalIgnoreCase))
+                        .ToList()
+                    : _dataTable.AsEnumerable()
+                        .Where(row => row[columnName].ToString().Contains(filterValue, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                var resultTable = _dataTable.Clone();
+                filteredRows.ForEach(row => resultTable.ImportRow(row));
+
+                Console.WriteLine($"✓ Filtrado completado: {filteredRows.Count} filas encontradas de {_dataTable.Rows.Count}");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al filtrar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Filtra múltiples criterios en la tabla usando LINQ .Where().
+        /// </summary>
+        /// <param name="filters">Diccionario con pares columna-valor</param>
+        /// <param name="exactMatch">Si es true, busca coincidencia exacta</param>
+        /// <returns>DataTable filtrado</returns>
+        public DataTable FilterByMultipleCriteria(Dictionary<string, string> filters, bool exactMatch = false)
+        {
+            try
+            {
+                if (filters == null || filters.Count == 0)
+                    throw new ArgumentException("Debe proporcionar al menos un filtro.");
+
+                var filteredRows = _dataTable.AsEnumerable();
+
+                foreach (var filter in filters)
+                {
+                    if (!_dataTable.Columns.Contains(filter.Key))
+                        throw new ArgumentException($"La columna '{filter.Key}' no existe en la tabla.");
+
+                    filteredRows = exactMatch
+                        ? filteredRows.Where(row => row[filter.Key].ToString().Equals(filter.Value, StringComparison.OrdinalIgnoreCase))
+                        : filteredRows.Where(row => row[filter.Key].ToString().Contains(filter.Value, StringComparison.OrdinalIgnoreCase));
+                }
+
+                var resultList = filteredRows.ToList();
+                var resultTable = _dataTable.Clone();
+                resultList.ForEach(row => resultTable.ImportRow(row));
+
+                Console.WriteLine($"✓ Filtrado completado: {resultList.Count} filas encontradas de {_dataTable.Rows.Count}");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al filtrar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Ordena la tabla usando LINQ .OrderBy() o .OrderByDescending().
+        /// </summary>
+        /// <param name="columnName">Nombre de la columna por la que ordenar</param>
+        /// <param name="descending">Si es true, ordena de forma descendente</param>
+        /// <returns>DataTable ordenado</returns>
+        public DataTable SortByColumn(string columnName, bool descending = false)
+        {
+            try
+            {
+                if (!_dataTable.Columns.Contains(columnName))
+                    throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+
+                var sortedRows = descending
+                    ? _dataTable.AsEnumerable()
+                        .OrderByDescending(row => row[columnName].ToString())
+                        .ToList()
+                    : _dataTable.AsEnumerable()
+                        .OrderBy(row => row[columnName].ToString())
+                        .ToList();
+
+                var resultTable = _dataTable.Clone();
+                sortedRows.ForEach(row => resultTable.ImportRow(row));
+
+                Console.WriteLine($"✓ Ordenamiento completado: {sortedRows.Count} filas ordenadas por '{columnName}'");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al ordenar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Ordena la tabla por múltiples columnas usando LINQ .OrderBy().
+        /// </summary>
+        /// <param name="columnNames">Lista de nombres de columnas para ordenamiento (en orden de prioridad)</param>
+        /// <param name="descending">Si es true, ordena todas las columnas de forma descendente</param>
+        /// <returns>DataTable ordenado</returns>
+        public DataTable SortByMultipleColumns(List<string> columnNames, bool descending = false)
+        {
+            try
+            {
+                if (columnNames == null || columnNames.Count == 0)
+                    throw new ArgumentException("Debe proporcionar al menos una columna para ordenar.");
+
+                foreach (var columnName in columnNames)
+                {
+                    if (!_dataTable.Columns.Contains(columnName))
+                        throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+                }
+
+                var sortedRows = _dataTable.AsEnumerable();
+
+                // Aplicar ordenamiento por cada columna en orden inverso para mantener prioridad
+                for (int i = columnNames.Count - 1; i >= 0; i--)
+                {
+                    sortedRows = descending
+                        ? sortedRows.OrderByDescending(row => row[columnNames[i]].ToString())
+                        : sortedRows.OrderBy(row => row[columnNames[i]].ToString());
+                }
+
+                var resultTable = _dataTable.Clone();
+                sortedRows.ToList().ForEach(row => resultTable.ImportRow(row));
+
+                Console.WriteLine($"✓ Ordenamiento completado: {sortedRows.Count()} filas ordenadas por '{string.Join(", ", columnNames)}'");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al ordenar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Agrupa filas de la tabla usando LINQ .GroupBy().
+        /// </summary>
+        /// <param name="columnName">Nombre de la columna por la que agrupar</param>
+        /// <returns>Diccionario con grupos y sus filas</returns>
+        public Dictionary<object, DataTable> GroupByColumn(string columnName)
+        {
+            try
+            {
+                if (!_dataTable.Columns.Contains(columnName))
+                    throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+
+                var groupedData = _dataTable.AsEnumerable()
+                    .GroupBy(row => row[columnName])
+                    .ToDictionary(group => group.Key, group => group.ToList());
+
+                var resultGroups = new Dictionary<object, DataTable>();
+
+                foreach (var group in groupedData)
+                {
+                    var groupTable = _dataTable.Clone();
+                    group.Value.ForEach(row => groupTable.ImportRow(row));
+                    resultGroups[group.Key] = groupTable;
+                }
+
+                Console.WriteLine($"✓ Agrupamiento completado: {resultGroups.Count} grupos creados por '{columnName}'");
+                return resultGroups;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al agrupar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Agrupa filas por múltiples columnas usando LINQ .GroupBy().
+        /// </summary>
+        /// <param name="columnNames">Lista de nombres de columnas para agrupar</param>
+        /// <returns>Diccionario con grupos compuestos y sus filas</returns>
+        public Dictionary<string, DataTable> GroupByMultipleColumns(List<string> columnNames)
+        {
+            try
+            {
+                if (columnNames == null || columnNames.Count == 0)
+                    throw new ArgumentException("Debe proporcionar al menos una columna para agrupar.");
+
+                foreach (var columnName in columnNames)
+                {
+                    if (!_dataTable.Columns.Contains(columnName))
+                        throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+                }
+
+                var groupedData = _dataTable.AsEnumerable()
+                    .GroupBy(row => string.Join("|", columnNames.Select(col => row[col].ToString())))
+                    .ToDictionary(group => group.Key, group => group.ToList());
+
+                var resultGroups = new Dictionary<string, DataTable>();
+
+                foreach (var group in groupedData)
+                {
+                    var groupTable = _dataTable.Clone();
+                    group.Value.ForEach(row => groupTable.ImportRow(row));
+                    resultGroups[group.Key] = groupTable;
+                }
+
+                Console.WriteLine($"✓ Agrupamiento completado: {resultGroups.Count} grupos creados por '{string.Join(", ", columnNames)}'");
+                return resultGroups;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al agrupar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene estadísticas de un agrupamiento.
+        /// </summary>
+        /// <param name="groupedData">Diccionario de grupos</param>
+        /// <returns>Información de conteo por grupo</returns>
+        public Dictionary<object, int> GetGroupStatistics(Dictionary<object, DataTable> groupedData)
+        {
+            return groupedData.ToDictionary(g => g.Key, g => g.Value.Rows.Count);
+        }
+
+        /// <summary>
+        /// Exporta la tabla a un archivo CSV usando LINQ.
         /// </summary>
         /// <param name="csvFilePath">Ruta del archivo CSV a guardar</param>
         public void ExportToCsv(string csvFilePath)
@@ -184,29 +414,32 @@ namespace Conexion_Servidores_LINQ
             {
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
-                    // Escribir encabezados
-                    var headers = _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
-                    writer.WriteLine(string.Join(",", headers));
+                    // Escribir encabezados usando LINQ
+                    var headers = string.Join(",", 
+                        _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName));
+                    writer.WriteLine(headers);
 
-                    // Escribir datos
-                    foreach (DataRow row in _dataTable.Rows)
+                    // Escribir datos usando LINQ
+                    foreach (var values in _dataTable.Rows.Cast<DataRow>()
+                        .Select(row => string.Join(",", 
+                            row.ItemArray.Select(item => $"\"{item}\""))))
                     {
-                        var values = row.ItemArray.Select(v => $"\"{v}\"");
-                        writer.WriteLine(string.Join(",", values));
+                        writer.WriteLine(values);
                     }
                 }
 
-                Console.WriteLine($"Tabla exportada correctamente a: {csvFilePath}");
+                Console.WriteLine($"✓ Tabla exportada correctamente a: {csvFilePath}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al exportar a CSV: {ex.Message}");
+                Console.WriteLine($"✗ Error al exportar a CSV: {ex.Message}");
                 throw;
             }
         }
 
         /// <summary>
         /// Muestra la tabla en la consola de forma formateada.
+        /// Utiliza LINQ para renderizar encabezados y datos.
         /// </summary>
         public void DisplayTable()
         {
@@ -220,20 +453,26 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine($"Total de filas: {_dataTable.Rows.Count}");
             Console.WriteLine(new string('=', 80));
 
-            // Mostrar encabezados
-            foreach (DataColumn column in _dataTable.Columns)
+            // Mostrar encabezados usando LINQ
+            foreach (var columnName in _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName))
             {
-                Console.Write(column.ColumnName.PadRight(20) + "| ");
+                Console.Write(columnName.PadRight(20) + "| ");
             }
             Console.WriteLine();
             Console.WriteLine(new string('-', 80));
 
-            // Mostrar datos
-            foreach (DataRow row in _dataTable.Rows)
+            // Mostrar datos usando LINQ
+            foreach (var values in _dataTable.Rows.Cast<DataRow>()
+                .Select(row => row.ItemArray
+                    .Select(item =>
+                    {
+                        string value = item.ToString();
+                        return value.Length > 20 ? value.Substring(0, 17) + "..." : value;
+                    })))
             {
-                foreach (var cell in row.ItemArray)
+                foreach (var cellValue in values)
                 {
-                    Console.Write(cell.ToString().PadRight(20).Substring(0, 20) + "| ");
+                    Console.Write(cellValue.PadRight(20) + "| ");
                 }
                 Console.WriteLine();
             }

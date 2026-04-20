@@ -1,6 +1,4 @@
-﻿using MySql.Data;
-using MySql.Data.MySqlClient;
-using MySqlConnector;
+﻿using MySqlConnector;
 using System.Data;
 
 namespace Conexion_Servidores_LINQ

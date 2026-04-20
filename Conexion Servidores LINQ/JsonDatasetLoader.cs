@@ -2,17 +2,17 @@
 using System.Collections.Generic;
 using System.Data;
 using System.Text.Json;
+using System.Linq;
 
 namespace Conexion_Servidores_LINQ
 {
     /// <summary>
     /// Clase que carga archivos JSON y los estructura en una tabla evitando duplicados y columnas vacías.
-    /// Utiliza Quick Sort y Bubble Sort para ordenamiento en lugar de LINQ.
+    /// Utiliza LINQ para búsqueda, ordenamiento y extracción de datos.
     /// </summary>
     public class JsonDatasetLoader
     {
         private DataTable _dataTable;
-        private bool _usarQuickSort = true; // true para Quick Sort, false para Bubble Sort
 
         public JsonDatasetLoader()
         {
@@ -21,6 +21,7 @@ namespace Conexion_Servidores_LINQ
 
         /// <summary>
         /// Carga un archivo JSON y lo convierte en una tabla de datos limpia.
+        /// Utiliza LINQ para extraer elementos.
         /// </summary>
         /// <param name="jsonFilePath">Ruta del archivo JSON</param>
         /// <returns>DataTable con los datos cargados</returns>
@@ -50,30 +51,17 @@ namespace Conexion_Servidores_LINQ
                     // Detectar si es un array o un objeto único
                     if (root.ValueKind == JsonValueKind.Array)
                     {
-                        foreach (var elemento in root.EnumerateArray())
-                        {
-                            elementos.Add(elemento);
-                        }
+                        elementos.AddRange(root.EnumerateArray());
                     }
                     else if (root.ValueKind == JsonValueKind.Object)
                     {
-                        // Buscar arrays dentro del objeto sin LINQ
-                        var arrayProperties = new List<JsonProperty>();
-                        foreach (var propiedad in root.EnumerateObject())
-                        {
-                            if (propiedad.Value.ValueKind == JsonValueKind.Array)
-                            {
-                                arrayProperties.Add(propiedad);
-                            }
-                        }
+                        // Buscar arrays dentro del objeto usando LINQ
+                        var arrayProperty = root.EnumerateObject()
+                            .FirstOrDefault(prop => prop.Value.ValueKind == JsonValueKind.Array);
 
-                        if (arrayProperties.Count > 0)
+                        if (arrayProperty.Value.ValueKind == JsonValueKind.Array)
                         {
-                            // Usar el primer array encontrado
-                            foreach (var elemento in arrayProperties[0].Value.EnumerateArray())
-                            {
-                                elementos.Add(elemento);
-                            }
+                            elementos.AddRange(arrayProperty.Value.EnumerateArray());
                         }
                         else
                         {
@@ -91,13 +79,16 @@ namespace Conexion_Servidores_LINQ
                     Console.WriteLine("? Extrayendo columnas...");
                     var todasLasClaves = ExtraerTodasLasClaves(elementos);
 
+                    // Ordenar columnas alfabéticamente usando LINQ
+                    var sortedClaves = todasLasClaves.OrderBy(clave => clave).ToList();
+
                     // Crear columnas en la tabla
-                    foreach (var clave in todasLasClaves)
+                    foreach (var clave in sortedClaves)
                     {
                         _dataTable.Columns.Add(clave, typeof(string));
                     }
 
-                    Console.WriteLine($"? Se crearon {todasLasClaves.Count} columnas");
+                    Console.WriteLine($"? Se crearon {sortedClaves.Count} columnas");
 
                     // Agregar filas evitando duplicados
                     var filasAgregadas = new HashSet<string>();
@@ -115,7 +106,7 @@ namespace Conexion_Servidores_LINQ
                         var rowData = new List<string>();
                         var rowHash = "";
 
-                        foreach (var clave in todasLasClaves)
+                        foreach (var clave in sortedClaves)
                         {
                             string valor = ObtenerValor(elemento, clave);
                             rowData.Add(valor);
@@ -158,116 +149,21 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Extrae todas las claves únicas del conjunto de elementos JSON.
-        /// Ordena usando Quick Sort o Bubble Sort según el atributo _usarQuickSort.
+        /// Extrae todas las claves únicas del conjunto de elementos JSON usando LINQ.
         /// </summary>
         private List<string> ExtraerTodasLasClaves(List<JsonElement> elementos)
         {
-            var claves = new HashSet<string>();
+            var claves = elementos
+                .Where(elemento => elemento.ValueKind == JsonValueKind.Object)
+                .SelectMany(elemento => elemento.EnumerateObject().Select(prop => prop.Name))
+                .Distinct()
+                .ToList();
 
-            foreach (var elemento in elementos)
-            {
-                if (elemento.ValueKind != JsonValueKind.Object)
-                    continue;
-
-                foreach (var propiedad in elemento.EnumerateObject())
-                {
-                    claves.Add(propiedad.Name);
-                }
-            }
-
-            // Convertir HashSet a List
-            var clavesList = new List<string>();
-            foreach (var clave in claves)
-            {
-                clavesList.Add(clave);
-            }
-
-            // Ordenar usando Quick Sort o Bubble Sort
-            if (_usarQuickSort)
-            {
-                OrdenarConQuickSort(clavesList, 0, clavesList.Count - 1);
-            }
-            else
-            {
-                OrdenarConBubbleSort(clavesList);
-            }
-
-            return clavesList;
+            return claves;
         }
 
         /// <summary>
-        /// Ordena una lista de strings usando Quick Sort (divide y conquista).
-        /// </summary>
-        private void OrdenarConQuickSort(List<string> items, int izquierda, int derecha)
-        {
-            if (izquierda < derecha)
-            {
-                int pivote = Particionar(items, izquierda, derecha);
-                OrdenarConQuickSort(items, izquierda, pivote - 1);
-                OrdenarConQuickSort(items, pivote + 1, derecha);
-            }
-        }
-
-        /// <summary>
-        /// Particiona la lista para Quick Sort usando el último elemento como pivote.
-        /// </summary>
-        private int Particionar(List<string> items, int izquierda, int derecha)
-        {
-            string pivote = items[derecha];
-            int i = izquierda - 1;
-
-            for (int j = izquierda; j < derecha; j++)
-            {
-                if (string.Compare(items[j], pivote) < 0)
-                {
-                    i++;
-                    // Intercambiar
-                    string temp = items[i];
-                    items[i] = items[j];
-                    items[j] = temp;
-                }
-            }
-
-            // Intercambiar pivote a su posición correcta
-            string tempPivote = items[i + 1];
-            items[i + 1] = items[derecha];
-            items[derecha] = tempPivote;
-
-            return i + 1;
-        }
-
-        /// <summary>
-        /// Ordena una lista de strings usando Bubble Sort (comparación simple).
-        /// </summary>
-        private void OrdenarConBubbleSort(List<string> items)
-        {
-            int n = items.Count;
-
-            for (int i = 0; i < n - 1; i++)
-            {
-                bool huboIntercambio = false;
-
-                for (int j = 0; j < n - i - 1; j++)
-                {
-                    if (string.Compare(items[j], items[j + 1]) > 0)
-                    {
-                        // Intercambiar
-                        string temp = items[j];
-                        items[j] = items[j + 1];
-                        items[j + 1] = temp;
-                        huboIntercambio = true;
-                    }
-                }
-
-                // Optimización: si no hay intercambios, la lista ya está ordenada
-                if (!huboIntercambio)
-                    break;
-            }
-        }
-
-        /// <summary>
-        /// Obtiene el valor de una propiedad específica del elemento JSON.
+        /// Obtiene el valor de una propiedad específica del elemento JSON usando LINQ.
         /// </summary>
         private string ObtenerValor(JsonElement elemento, string nombrePropiedad)
         {
@@ -287,81 +183,48 @@ namespace Conexion_Servidores_LINQ
 
         /// <summary>
         /// Convierte un valor JSON a string, manejando diferentes tipos de datos.
+        /// Utiliza LINQ para colecciones.
         /// </summary>
         private string ConvertirValorJson(JsonElement elemento)
         {
-            switch (elemento.ValueKind)
+            return elemento.ValueKind switch
             {
-                case JsonValueKind.String:
-                    return elemento.GetString() ?? string.Empty;
+                JsonValueKind.String => elemento.GetString() ?? string.Empty,
 
-                case JsonValueKind.Number:
-                    if (elemento.TryGetInt32(out int intValue))
-                        return intValue.ToString();
-                    if (elemento.TryGetInt64(out long longValue))
-                        return longValue.ToString();
-                    if (elemento.TryGetDouble(out double doubleValue))
-                        return doubleValue.ToString();
-                    return elemento.ToString();
+                JsonValueKind.Number => elemento.TryGetInt32(out int intValue)
+                    ? intValue.ToString()
+                    : elemento.TryGetInt64(out long longValue)
+                        ? longValue.ToString()
+                        : elemento.TryGetDouble(out double doubleValue)
+                            ? doubleValue.ToString()
+                            : elemento.ToString(),
 
-                case JsonValueKind.True:
-                    return "true";
+                JsonValueKind.True => "true",
+                JsonValueKind.False => "false",
+                JsonValueKind.Null => string.Empty,
 
-                case JsonValueKind.False:
-                    return "false";
+                JsonValueKind.Array => string.Join("; ", 
+                    elemento.EnumerateArray()
+                        .Select(ConvertirValorJson)
+                        .Where(v => !string.IsNullOrEmpty(v))),
 
-                case JsonValueKind.Null:
-                    return string.Empty;
+                JsonValueKind.Object => "{" + string.Join(", ", 
+                    elemento.EnumerateObject()
+                        .Select(prop => $"{prop.Name}: {ConvertirValorJson(prop.Value)}")) + "}",
 
-                case JsonValueKind.Array:
-                    var items = new List<string>();
-                    foreach (var item in elemento.EnumerateArray())
-                    {
-                        string valor = ConvertirValorJson(item);
-                        if (!string.IsNullOrEmpty(valor))
-                        {
-                            items.Add(valor);
-                        }
-                    }
-                    return string.Join("; ", items);
-
-                case JsonValueKind.Object:
-                    // Para objetos anidados, crear una representación simple
-                    var propiedades = new List<string>();
-                    foreach (var prop in elemento.EnumerateObject())
-                    {
-                        propiedades.Add($"{prop.Name}: {ConvertirValorJson(prop.Value)}");
-                    }
-                    return "{" + string.Join(", ", propiedades) + "}";
-
-                default:
-                    return string.Empty;
-            }
+                _ => string.Empty
+            };
         }
 
         /// <summary>
-        /// Elimina columnas que están completamente vacías.
+        /// Elimina columnas que están completamente vacías usando LINQ.
         /// </summary>
         private void RemoverColumnasVacias()
         {
-            var columnasVacias = new List<DataColumn>();
-
-            foreach (DataColumn column in _dataTable.Columns)
-            {
-                bool estaVacia = true;
-
-                foreach (DataRow row in _dataTable.Rows)
-                {
-                    if (!string.IsNullOrWhiteSpace(row[column].ToString()))
-                    {
-                        estaVacia = false;
-                        break;
-                    }
-                }
-
-                if (estaVacia)
-                    columnasVacias.Add(column);
-            }
+            var columnasVacias = _dataTable.Columns.Cast<DataColumn>()
+                .Where(column => _dataTable.AsEnumerable()
+                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString())))
+                .ToList();
 
             foreach (var column in columnasVacias)
             {
@@ -378,7 +241,265 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Exporta la tabla a un archivo CSV.
+        /// Filtra filas de la tabla usando LINQ .Where().
+        /// </summary>
+        /// <param name="columnName">Nombre de la columna a filtrar</param>
+        /// <param name="filterValue">Valor o patrón a buscar</param>
+        /// <param name="exactMatch">Si es true, busca coincidencia exacta; si es false, busca coincidencia parcial</param>
+        /// <returns>DataTable filtrado</returns>
+        public DataTable FilterByColumn(string columnName, string filterValue, bool exactMatch = false)
+        {
+            try
+            {
+                if (!_dataTable.Columns.Contains(columnName))
+                    throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+
+                if (string.IsNullOrWhiteSpace(filterValue))
+                    throw new ArgumentException("El valor de filtro no puede estar vacío.");
+
+                var filteredRows = exactMatch
+                    ? _dataTable.AsEnumerable()
+                        .Where(row => row[columnName].ToString().Equals(filterValue, StringComparison.OrdinalIgnoreCase))
+                        .ToList()
+                    : _dataTable.AsEnumerable()
+                        .Where(row => row[columnName].ToString().Contains(filterValue, StringComparison.OrdinalIgnoreCase))
+                        .ToList();
+
+                var resultTable = _dataTable.Clone();
+                foreach (var row in filteredRows)
+                {
+                    resultTable.ImportRow(row);
+                }
+
+                Console.WriteLine($"✓ Filtrado completado: {filteredRows.Count} filas encontradas de {_dataTable.Rows.Count}");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al filtrar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Filtra múltiples criterios en la tabla usando LINQ .Where().
+        /// </summary>
+        /// <param name="filters">Diccionario con pares columna-valor</param>
+        /// <param name="exactMatch">Si es true, busca coincidencia exacta</param>
+        /// <returns>DataTable filtrado</returns>
+        public DataTable FilterByMultipleCriteria(Dictionary<string, string> filters, bool exactMatch = false)
+        {
+            try
+            {
+                if (filters == null || filters.Count == 0)
+                    throw new ArgumentException("Debe proporcionar al menos un filtro.");
+
+                var filteredRows = _dataTable.AsEnumerable();
+
+                foreach (var filter in filters)
+                {
+                    if (!_dataTable.Columns.Contains(filter.Key))
+                        throw new ArgumentException($"La columna '{filter.Key}' no existe en la tabla.");
+
+                    filteredRows = exactMatch
+                        ? filteredRows.Where(row => row[filter.Key].ToString().Equals(filter.Value, StringComparison.OrdinalIgnoreCase))
+                        : filteredRows.Where(row => row[filter.Key].ToString().Contains(filter.Value, StringComparison.OrdinalIgnoreCase));
+                }
+
+                var resultList = filteredRows.ToList();
+                var resultTable = _dataTable.Clone();
+
+                foreach (var row in resultList)
+                {
+                    resultTable.ImportRow(row);
+                }
+
+                Console.WriteLine($"✓ Filtrado completado: {resultList.Count} filas encontradas de {_dataTable.Rows.Count}");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al filtrar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Ordena la tabla usando LINQ .OrderBy() o .OrderByDescending().
+        /// </summary>
+        /// <param name="columnName">Nombre de la columna por la que ordenar</param>
+        /// <param name="descending">Si es true, ordena de forma descendente</param>
+        /// <returns>DataTable ordenado</returns>
+        public DataTable SortByColumn(string columnName, bool descending = false)
+        {
+            try
+            {
+                if (!_dataTable.Columns.Contains(columnName))
+                    throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+
+                var sortedRows = descending
+                    ? _dataTable.AsEnumerable()
+                        .OrderByDescending(row => row[columnName].ToString())
+                        .ToList()
+                    : _dataTable.AsEnumerable()
+                        .OrderBy(row => row[columnName].ToString())
+                        .ToList();
+
+                var resultTable = _dataTable.Clone();
+                foreach (var row in sortedRows)
+                {
+                    resultTable.ImportRow(row);
+                }
+
+                Console.WriteLine($"✓ Ordenamiento completado: {sortedRows.Count} filas ordenadas por '{columnName}'");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al ordenar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Ordena la tabla por múltiples columnas usando LINQ .OrderBy().
+        /// </summary>
+        /// <param name="columnNames">Lista de nombres de columnas para ordenamiento (en orden de prioridad)</param>
+        /// <param name="descending">Si es true, ordena todas las columnas de forma descendente</param>
+        /// <returns>DataTable ordenado</returns>
+        public DataTable SortByMultipleColumns(List<string> columnNames, bool descending = false)
+        {
+            try
+            {
+                if (columnNames == null || columnNames.Count == 0)
+                    throw new ArgumentException("Debe proporcionar al menos una columna para ordenar.");
+
+                foreach (var columnName in columnNames)
+                {
+                    if (!_dataTable.Columns.Contains(columnName))
+                        throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+                }
+
+                var sortedRows = _dataTable.AsEnumerable();
+
+                // Aplicar ordenamiento por cada columna en orden inverso para mantener prioridad
+                for (int i = columnNames.Count - 1; i >= 0; i--)
+                {
+                    sortedRows = descending
+                        ? sortedRows.OrderByDescending(row => row[columnNames[i]].ToString())
+                        : sortedRows.OrderBy(row => row[columnNames[i]].ToString());
+                }
+
+                var resultTable = _dataTable.Clone();
+                foreach (var row in sortedRows.ToList())
+                {
+                    resultTable.ImportRow(row);
+                }
+
+                Console.WriteLine($"✓ Ordenamiento completado: {sortedRows.Count()} filas ordenadas por '{string.Join(", ", columnNames)}'");
+                return resultTable;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al ordenar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Agrupa filas de la tabla usando LINQ .GroupBy().
+        /// </summary>
+        /// <param name="columnName">Nombre de la columna por la que agrupar</param>
+        /// <returns>Diccionario con grupos y sus filas</returns>
+        public Dictionary<object, DataTable> GroupByColumn(string columnName)
+        {
+            try
+            {
+                if (!_dataTable.Columns.Contains(columnName))
+                    throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+
+                var groupedData = _dataTable.AsEnumerable()
+                    .GroupBy(row => row[columnName])
+                    .ToDictionary(group => group.Key, group => group.ToList());
+
+                var resultGroups = new Dictionary<object, DataTable>();
+
+                foreach (var group in groupedData)
+                {
+                    var groupTable = _dataTable.Clone();
+                    foreach (var row in group.Value)
+                    {
+                        groupTable.ImportRow(row);
+                    }
+                    resultGroups[group.Key] = groupTable;
+                }
+
+                Console.WriteLine($"✓ Agrupamiento completado: {resultGroups.Count} grupos creados por '{columnName}'");
+                return resultGroups;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al agrupar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Agrupa filas por múltiples columnas usando LINQ .GroupBy().
+        /// </summary>
+        /// <param name="columnNames">Lista de nombres de columnas para agrupar</param>
+        /// <returns>Diccionario con grupos compuestos y sus filas</returns>
+        public Dictionary<string, DataTable> GroupByMultipleColumns(List<string> columnNames)
+        {
+            try
+            {
+                if (columnNames == null || columnNames.Count == 0)
+                    throw new ArgumentException("Debe proporcionar al menos una columna para agrupar.");
+
+                foreach (var columnName in columnNames)
+                {
+                    if (!_dataTable.Columns.Contains(columnName))
+                        throw new ArgumentException($"La columna '{columnName}' no existe en la tabla.");
+                }
+
+                var groupedData = _dataTable.AsEnumerable()
+                    .GroupBy(row => string.Join("|", columnNames.Select(col => row[col].ToString())))
+                    .ToDictionary(group => group.Key, group => group.ToList());
+
+                var resultGroups = new Dictionary<string, DataTable>();
+
+                foreach (var group in groupedData)
+                {
+                    var groupTable = _dataTable.Clone();
+                    foreach (var row in group.Value)
+                    {
+                        groupTable.ImportRow(row);
+                    }
+                    resultGroups[group.Key] = groupTable;
+                }
+
+                Console.WriteLine($"✓ Agrupamiento completado: {resultGroups.Count} grupos creados por '{string.Join(", ", columnNames)}'");
+                return resultGroups;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error al agrupar: {ex.Message}");
+                throw;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene estadísticas de un agrupamiento.
+        /// </summary>
+        /// <param name="groupedData">Diccionario de grupos</param>
+        /// <returns>Información de conteo por grupo</returns>
+        public Dictionary<object, int> GetGroupStatistics(Dictionary<object, DataTable> groupedData)
+        {
+            return groupedData.ToDictionary(g => g.Key, g => g.Value.Rows.Count);
+        }
+
+        /// <summary>
+        /// Exporta la tabla a un archivo CSV usando LINQ.
         /// </summary>
         /// <param name="csvFilePath">Ruta del archivo CSV a guardar</param>
         public void ExportToCsv(string csvFilePath)
@@ -387,25 +508,17 @@ namespace Conexion_Servidores_LINQ
             {
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
-                    // Escribir encabezados
-                    for (int i = 0; i < _dataTable.Columns.Count; i++)
-                    {
-                        if (i > 0)
-                            writer.Write(",");
-                        writer.Write(_dataTable.Columns[i].ColumnName);
-                    }
-                    writer.WriteLine();
+                    // Escribir encabezados usando LINQ
+                    var headers = string.Join(",", 
+                        _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName));
+                    writer.WriteLine(headers);
 
-                    // Escribir datos
-                    foreach (DataRow row in _dataTable.Rows)
+                    // Escribir datos usando LINQ
+                    foreach (var values in _dataTable.Rows.Cast<DataRow>()
+                        .Select(row => string.Join(",", 
+                            row.ItemArray.Select(item => $"\"{item}\""))))
                     {
-                        for (int i = 0; i < row.ItemArray.Length; i++)
-                        {
-                            if (i > 0)
-                                writer.Write(",");
-                            writer.Write($"\"{row.ItemArray[i]}\"");
-                        }
-                        writer.WriteLine();
+                        writer.WriteLine(values);
                     }
                 }
 
@@ -420,6 +533,7 @@ namespace Conexion_Servidores_LINQ
 
         /// <summary>
         /// Muestra la tabla en la consola de forma formateada.
+        /// Utiliza LINQ para renderizar encabezados y datos.
         /// </summary>
         public void DisplayTable()
         {
@@ -433,20 +547,26 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine($"Total de filas: {_dataTable.Rows.Count}");
             Console.WriteLine(new string('=', 80));
 
-            // Mostrar encabezados
-            for (int i = 0; i < _dataTable.Columns.Count; i++)
+            // Mostrar encabezados usando LINQ
+            foreach (var columnName in _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName))
             {
-                Console.Write(_dataTable.Columns[i].ColumnName.PadRight(20) + "| ");
+                Console.Write(columnName.PadRight(20) + "| ");
             }
             Console.WriteLine();
             Console.WriteLine(new string('-', 80));
 
-            // Mostrar datos
-            foreach (DataRow row in _dataTable.Rows)
+            // Mostrar datos usando LINQ
+            foreach (var values in _dataTable.Rows.Cast<DataRow>()
+                .Select(row => row.ItemArray
+                    .Select(item =>
+                    {
+                        string value = item.ToString();
+                        return value.Length > 20 ? value.Substring(0, 17) + "..." : value;
+                    })))
             {
-                for (int i = 0; i < row.ItemArray.Length; i++)
+                foreach (var cellValue in values)
                 {
-                    Console.Write(row.ItemArray[i].ToString().PadRight(20).Substring(0, 20) + "| ");
+                    Console.Write(cellValue.PadRight(20) + "| ");
                 }
                 Console.WriteLine();
             }
