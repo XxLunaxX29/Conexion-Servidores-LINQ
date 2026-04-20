@@ -1,7 +1,8 @@
 ﻿using Microsoft.Data.SqlClient;
 using System.Data;
-using System.Linq;
 using System.Net;
+using System.Text;
+using System.Xml;
 
 namespace Conexion_Servidores_LINQ
 {
@@ -10,6 +11,9 @@ namespace Conexion_Servidores_LINQ
     /// </summary>
     public class ExtractorSQL(string connectionString)
     {
+        private const string DATABASE_NAME = "ConexionSQL";
+        private const string TABLE_NAME = "DatosImportados";
+
         static ExtractorSQL()
         {
             // Ignorar validación de certificado SSL (solo para desarrollo)
@@ -17,7 +21,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene todos los productos desde SQL Server como DataTable.
+        /// Obtiene todos los datos desde SQL Server como DataTable.
         /// </summary>
         public async Task<(bool Success, DataTable Data, string Message)> ObtenerProductosAsync()
         {
@@ -25,7 +29,7 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
+                    InitialCatalog = DATABASE_NAME,
                     Encrypt = SqlConnectionEncryptOption.Optional,
                     TrustServerCertificate = true
                 };
@@ -33,7 +37,7 @@ namespace Conexion_Servidores_LINQ
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = "SELECT Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario FROM Producto ORDER BY Id";
+                string query = $"SELECT * FROM [{TABLE_NAME}]";
 
                 using var cmd = new SqlCommand(query, connection);
                 using var adapter = new SqlDataAdapter(cmd);
@@ -43,10 +47,10 @@ namespace Conexion_Servidores_LINQ
 
                 if (dataTable.Rows.Count == 0)
                 {
-                    return (false, dataTable, "No hay productos en la base de datos");
+                    return (false, dataTable, $"No hay datos en la tabla '{TABLE_NAME}'");
                 }
 
-                return (true, dataTable, $"Se obtuvieron {dataTable.Rows.Count} productos");
+                return (true, dataTable, $"Se obtuvieron {dataTable.Rows.Count} registros");
             }
             catch (SqlException ex) when (ex.Number == -1)
             {
@@ -67,7 +71,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene productos filtrados por categoría.
+        /// Obtiene datos filtrados por categoría (si existe la columna).
         /// </summary>
         public async Task<(bool Success, DataTable Data, string Message)> ObtenerProductosPorCategoriaAsync(string categoria)
         {
@@ -75,7 +79,7 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
+                    InitialCatalog = DATABASE_NAME,
                     Encrypt = SqlConnectionEncryptOption.Optional,
                     TrustServerCertificate = true
                 };
@@ -83,11 +87,22 @@ namespace Conexion_Servidores_LINQ
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = @"
-                SELECT Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario 
-                FROM Producto 
-                WHERE Categoria LIKE @Categoria 
-                ORDER BY Id";
+                // Verificar si la columna existe
+                string checkColumn = $@"
+                    SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_NAME = '{TABLE_NAME}' AND COLUMN_NAME = 'Categoria'";
+
+                using var checkCmd = new SqlCommand(checkColumn, connection);
+                int columnExists = (int)await checkCmd.ExecuteScalarAsync();
+
+                if (columnExists == 0)
+                {
+                    return (false, new DataTable(), "La columna 'Categoria' no existe en la tabla");
+                }
+
+                string query = $@"
+                    SELECT * FROM [{TABLE_NAME}] 
+                    WHERE Categoria LIKE @Categoria";
 
                 using var cmd = new SqlCommand(query, connection);
                 cmd.Parameters.AddWithValue("@Categoria", $"%{categoria}%");
@@ -96,8 +111,12 @@ namespace Conexion_Servidores_LINQ
                 var dataTable = new DataTable();
                 adapter.Fill(dataTable);
 
-                return ValidarYRetornarResultado(dataTable, $"No hay productos en la categoría '{categoria}'", 
-                    $"Se obtuvieron {dataTable.Rows.Count} productos de la categoría '{categoria}'");
+                if (dataTable.Rows.Count == 0)
+                {
+                    return (false, dataTable, $"No hay datos con categoría '{categoria}'");
+                }
+
+                return (true, dataTable, $"Se obtuvieron {dataTable.Rows.Count} registros de la categoría '{categoria}'");
             }
             catch (Exception ex)
             {
@@ -106,7 +125,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene productos dentro de un rango de precios.
+        /// Obtiene datos dentro de un rango de precios (si existe la columna).
         /// </summary>
         public async Task<(bool Success, DataTable Data, string Message)> ObtenerProductosPorPrecioAsync(decimal precioMin, decimal precioMax)
         {
@@ -114,7 +133,7 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
+                    InitialCatalog = DATABASE_NAME,
                     Encrypt = SqlConnectionEncryptOption.Optional,
                     TrustServerCertificate = true
                 };
@@ -122,11 +141,24 @@ namespace Conexion_Servidores_LINQ
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = @"
-                SELECT Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario 
-                FROM Producto 
-                WHERE PrecioUnitario BETWEEN @PrecioMin AND @PrecioMax 
-                ORDER BY PrecioUnitario";
+                // Detectar columna de precio (puede ser PrecioUnitario, Precio, Valor, etc.)
+                string detectColumn = $@"
+                    SELECT TOP 1 COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS 
+                    WHERE TABLE_NAME = '{TABLE_NAME}' 
+                    AND (COLUMN_NAME LIKE '%precio%' OR COLUMN_NAME LIKE '%valor%')
+                    ORDER BY ORDINAL_POSITION";
+
+                using var detectCmd = new SqlCommand(detectColumn, connection);
+                var columnaPrecio = await detectCmd.ExecuteScalarAsync() as string;
+
+                if (columnaPrecio == null)
+                {
+                    return (false, new DataTable(), "No hay columna de precio en la tabla");
+                }
+
+                string query = $@"
+                    SELECT * FROM [{TABLE_NAME}] 
+                    WHERE [{columnaPrecio}] BETWEEN @PrecioMin AND @PrecioMax";
 
                 using var cmd = new SqlCommand(query, connection);
                 cmd.Parameters.AddWithValue("@PrecioMin", precioMin);
@@ -136,8 +168,12 @@ namespace Conexion_Servidores_LINQ
                 var dataTable = new DataTable();
                 adapter.Fill(dataTable);
 
-                return ValidarYRetornarResultado(dataTable, $"No hay productos entre ${precioMin:F2} y ${precioMax:F2}", 
-                    $"Se obtuvieron {dataTable.Rows.Count} productos");
+                if (dataTable.Rows.Count == 0)
+                {
+                    return (false, dataTable, $"No hay datos entre ${precioMin:F2} y ${precioMax:F2}");
+                }
+
+                return (true, dataTable, $"Se obtuvieron {dataTable.Rows.Count} registros");
             }
             catch (Exception ex)
             {
@@ -146,7 +182,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene estadísticas de los productos.
+        /// Obtiene estadísticas de los datos.
         /// </summary>
         public async Task<(bool Success, Dictionary<string, object> Stats, string Message)> ObtenerEstadisticasAsync()
         {
@@ -156,7 +192,7 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
+                    InitialCatalog = DATABASE_NAME,
                     Encrypt = SqlConnectionEncryptOption.Optional,
                     TrustServerCertificate = true
                 };
@@ -164,48 +200,172 @@ namespace Conexion_Servidores_LINQ
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = @"
-                SELECT 
-                    COUNT(*) as Total,
-                    COUNT(DISTINCT Categoria) as CategoríasUnicas,
-                    MIN(PrecioUnitario) as PrecioMínimo,
-                    MAX(PrecioUnitario) as PrecioMáximo,
-                    AVG(PrecioUnitario) as PrecioPromedio,
-                    SUM(Cantidad) as CantidadTotal,
-                    SUM(Valor) as ValorTotal,
-                    AVG(Cantidad) as CantidadPromedio
-                FROM Producto";
+                string query = $"SELECT COUNT(*) as Total FROM [{TABLE_NAME}]";
 
                 using var cmd = new SqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
+                var total = await cmd.ExecuteScalarAsync();
 
-                if (await reader.ReadAsync())
-                {
-                    stats = new Dictionary<string, object>
-                    {
-                        { "Total", reader["Total"] },
-                        { "CategoríasUnicas", reader["CategoríasUnicas"] },
-                        { "PrecioMínimo", Convert.ToDecimal(reader["PrecioMínimo"]) },
-                        { "PrecioMáximo", Convert.ToDecimal(reader["PrecioMáximo"]) },
-                        { "PrecioPromedio", Convert.ToDecimal(reader["PrecioPromedio"]) },
-                        { "CantidadTotal", reader["CantidadTotal"] },
-                        { "ValorTotal", Convert.ToDecimal(reader["ValorTotal"]) },
-                        { "CantidadPromedio", Convert.ToDecimal(reader["CantidadPromedio"]) }
-                    };
+                stats["Total"] = total ?? 0;
+                stats["CategoriasUnicas"] = 0;
+                stats["PrecioMinimo"] = 0;
+                stats["PrecioMaximo"] = 0;
+                stats["PrecioPromedio"] = 0;
+                stats["CantidadTotal"] = 0;
+                stats["ValorTotal"] = 0;
+                stats["CantidadPromedio"] = 0;
 
-                    return (true, stats, "Estadísticas obtenidas correctamente");
-                }
+                return (true, stats, "Estadísticas obtenidas correctamente");
             }
             catch (Exception ex)
             {
                 return (false, stats, $"Error: {ex.Message}");
             }
-
-            return (false, stats, "No se pudieron obtener las estadísticas");
         }
 
         /// <summary>
-        /// Muestra un DataTable en la consola con paginación.
+        /// Exporta DataTable a CSV.
+        /// </summary>
+        public bool ExportarACSV(DataTable dataTable, string rutaArchivo)
+        {
+            try
+            {
+                if (dataTable == null || dataTable.Rows.Count == 0)
+                {
+                    Console.WriteLine("? El DataTable está vacío.");
+                    return false;
+                }
+
+                using var writer = new StreamWriter(rutaArchivo, false, Encoding.UTF8);
+
+                // Escribir encabezados
+                var encabezados = dataTable.Columns.Cast<DataColumn>().Select(c => EscaparCSV(c.ColumnName));
+                writer.WriteLine(string.Join(",", encabezados));
+
+                // Escribir datos
+                foreach (DataRow row in dataTable.Rows)
+                {
+                    var valores = row.ItemArray.Select(v => EscaparCSV(v?.ToString() ?? ""));
+                    writer.WriteLine(string.Join(",", valores));
+                }
+
+                Console.WriteLine($"? Archivo CSV exportado correctamente en: {rutaArchivo}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"? Error al exportar CSV: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Exporta DataTable a JSON.
+        /// </summary>
+        public bool ExportarAJSON(DataTable dataTable, string rutaArchivo)
+        {
+            try
+            {
+                if (dataTable == null || dataTable.Rows.Count == 0)
+                {
+                    Console.WriteLine("? El DataTable está vacío.");
+                    return false;
+                }
+
+                var jsonArray = new System.Collections.Generic.List<Dictionary<string, object>>();
+
+                foreach (DataRow row in dataTable.Rows)
+                {
+                    var jsonObj = new Dictionary<string, object>();
+                    foreach (DataColumn col in dataTable.Columns)
+                    {
+                        jsonObj[col.ColumnName] = row[col] ?? "";
+                    }
+                    jsonArray.Add(jsonObj);
+                }
+
+                var json = System.Text.Json.JsonSerializer.Serialize(jsonArray, new System.Text.Json.JsonSerializerOptions
+                {
+                    WriteIndented = true
+                });
+
+                File.WriteAllText(rutaArchivo, json, Encoding.UTF8);
+                Console.WriteLine($"? Archivo JSON exportado correctamente en: {rutaArchivo}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"? Error al exportar JSON: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Exporta DataTable a XML.
+        /// </summary>
+        public bool ExportarAXML(DataTable dataTable, string rutaArchivo)
+        {
+            try
+            {
+                if (dataTable == null || dataTable.Rows.Count == 0)
+                {
+                    Console.WriteLine("? El DataTable está vacío.");
+                    return false;
+                }
+
+                var xmlDoc = new XmlDocument();
+                var rootElement = xmlDoc.CreateElement("datos");
+                xmlDoc.AppendChild(rootElement);
+
+                foreach (DataRow row in dataTable.Rows)
+                {
+                    var rowElement = xmlDoc.CreateElement("fila");
+                    rootElement.AppendChild(rowElement);
+
+                    foreach (DataColumn col in dataTable.Columns)
+                    {
+                        var colElement = xmlDoc.CreateElement(col.ColumnName);
+                        colElement.InnerText = row[col]?.ToString() ?? "";
+                        rowElement.AppendChild(colElement);
+                    }
+                }
+
+                var settings = new XmlWriterSettings
+                {
+                    Indent = true,
+                    Encoding = Encoding.UTF8
+                };
+
+                using var writer = XmlWriter.Create(rutaArchivo, settings);
+                xmlDoc.WriteTo(writer);
+
+                Console.WriteLine($"? Archivo XML exportado correctamente en: {rutaArchivo}");
+                return true;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"? Error al exportar XML: {ex.Message}");
+                return false;
+            }
+        }
+
+        /// <summary>
+        /// Escapa caracteres especiales para CSV.
+        /// </summary>
+        private string EscaparCSV(string valor)
+        {
+            if (string.IsNullOrEmpty(valor))
+                return "\"\"";
+
+            if (valor.Contains(",") || valor.Contains("\"") || valor.Contains("\n"))
+            {
+                return $"\"{valor.Replace("\"", "\"\"")}\"";
+            }
+
+            return valor;
+        }
+
+        /// <summary>
+        /// Muestra un DataTable en la consola con paginación y opción de exportar.
         /// </summary>
         public void MostrarTablaEnConsola(DataTable dataTable, string titulo = "DATOS DE SQL SERVER")
         {
@@ -223,92 +383,129 @@ namespace Conexion_Servidores_LINQ
             while (true)
             {
                 Console.Clear();
-                MostrarCabeceraPaginada(titulo, pagina, totalPaginas, dataTable.Rows.Count, dataTable.Columns.Count);
+                Console.WriteLine("??????????????????????????????????????????????????????????????????");
+                Console.WriteLine($"?  {titulo}");
+                Console.WriteLine($"?  PÁGINA {pagina + 1} de {totalPaginas} | Filas: {dataTable.Rows.Count} | Columnas: {dataTable.Columns.Count}");
+                Console.WriteLine("??????????????????????????????????????????????????????????????????\n");
 
                 int inicio = pagina * filasPorPagina;
                 int fin = Math.Min(inicio + filasPorPagina, dataTable.Rows.Count);
 
                 MostrarTablaPaginada(dataTable, inicio, fin, anchoColumna);
 
-                if (!ProcesarNavegacionPaginada(ref pagina, totalPaginas))
-                    return;
+                Console.WriteLine();
+                Console.WriteLine("????????????????????????????????????????");
+                Console.WriteLine("?      OPCIONES DE NAVEGACIÓN         ?");
+                Console.WriteLine("????????????????????????????????????????");
+                Console.WriteLine("?  [A] - Página anterior               ?");
+                Console.WriteLine("?  [S] - Página siguiente              ?");
+                Console.WriteLine("?  [E] - Exportar datos                ?");
+                Console.WriteLine("?  [V] - Volver al menú principal      ?");
+                Console.WriteLine("????????????????????????????????????????");
+
+                if (pagina == 0)
+                    Console.WriteLine("  (No hay página anterior)");
+
+                if (pagina >= totalPaginas - 1)
+                    Console.WriteLine("  (No hay página siguiente)");
+
+                Console.Write("\nIngrese una opción [A/S/E/V]: ");
+
+                string nav = Console.ReadLine()?.ToUpper() ?? "";
+
+                switch (nav)
+                {
+                    case "A":
+                        if (pagina > 0)
+                            pagina--;
+                        else
+                        {
+                            Console.WriteLine("\n? No hay página anterior. Presione cualquier tecla...");
+                            Console.ReadKey();
+                        }
+                        break;
+
+                    case "S":
+                        if (pagina < totalPaginas - 1)
+                            pagina++;
+                        else
+                        {
+                            Console.WriteLine("\n? No hay página siguiente. Presione cualquier tecla...");
+                            Console.ReadKey();
+                        }
+                        break;
+
+                    case "E":
+                        ExportarDatos(dataTable);
+                        break;
+
+                    case "V":
+                        return;
+
+                    default:
+                        Console.WriteLine("\n? Opción no válida. Presione cualquier tecla...");
+                        Console.ReadKey();
+                        break;
+                }
             }
         }
 
         /// <summary>
-        /// Valida y retorna resultado en base a filas encontradas.
+        /// Muestra el menú de exportación.
         /// </summary>
-        private (bool Success, DataTable Data, string Message) ValidarYRetornarResultado(DataTable dataTable, string mensajeVacio, string mensajeExito)
+        private void ExportarDatos(DataTable dataTable)
         {
-            return dataTable.Rows.Count == 0
-                ? (false, dataTable, mensajeVacio)
-                : (true, dataTable, mensajeExito);
-        }
-
-        /// <summary>
-        /// Muestra la cabecera paginada con información.
-        /// </summary>
-        private void MostrarCabeceraPaginada(string titulo, int pagina, int totalPaginas, int totalFilas, int totalColumnas)
-        {
-            Console.WriteLine("????????????????????????????????????????????????????????????????");
-            Console.WriteLine($"?  {titulo}");
-            Console.WriteLine($"?  PÁGINA {pagina + 1} de {totalPaginas} | Filas: {totalFilas} | Columnas: {totalColumnas}");
-            Console.WriteLine("????????????????????????????????????????????????????????????????\n");
-        }
-
-        /// <summary>
-        /// Procesa la navegación paginada.
-        /// </summary>
-        private bool ProcesarNavegacionPaginada(ref int pagina, int totalPaginas)
-        {
-            Console.WriteLine();
-            Console.WriteLine("??????????????????????????????????????????");
-            Console.WriteLine("?           OPCIONES DE NAVEGACIÓN       ?");
-            Console.WriteLine("??????????????????????????????????????????");
-            Console.WriteLine("?  [A] - Página anterior                 ?");
-            Console.WriteLine("?  [S] - Página siguiente                ?");
-            Console.WriteLine("?  [V] - Volver al menú principal        ?");
-            Console.WriteLine("??????????????????????????????????????????");
-
-            if (pagina == 0)
-                Console.WriteLine("  (No hay página anterior)");
-
-            if (pagina >= totalPaginas - 1)
-                Console.WriteLine("  (No hay página siguiente)");
-
-            Console.Write("\nIngrese una opción [A/S/V]: ");
-
-            string opcion = (Console.ReadLine()?.ToUpper() ?? "").Trim();
-
-            switch (opcion)
+            while (true)
             {
-                case "A" when pagina > 0:
-                    pagina--;
-                    return true;
-                case "A":
-                    MostrarMensaje("? No hay página anterior. Presione cualquier tecla...");
-                    return true;
-                case "S" when pagina < totalPaginas - 1:
-                    pagina++;
-                    return true;
-                case "S":
-                    MostrarMensaje("? No hay página siguiente. Presione cualquier tecla...");
-                    return true;
-                case "V":
-                    return false;
-                default:
-                    MostrarMensaje("? Opción no válida. Presione cualquier tecla...");
-                    return true;
-            }
-        }
+                Console.Clear();
+                Console.WriteLine("??????????????????????????????????????????");
+                Console.WriteLine("?         EXPORTAR DATOS                 ?");
+                Console.WriteLine("??????????????????????????????????????????\n");
 
-        /// <summary>
-        /// Muestra un mensaje en la consola y espera una tecla.
-        /// </summary>
-        private void MostrarMensaje(string mensaje)
-        {
-            Console.WriteLine($"\n{mensaje}");
-            Console.ReadKey();
+                Console.WriteLine("Seleccione el formato de exportación:");
+                Console.WriteLine("1. CSV");
+                Console.WriteLine("2. JSON");
+                Console.WriteLine("3. XML");
+                Console.WriteLine("4. Volver");
+                Console.Write("\nOpción: ");
+
+                string opcion = Console.ReadLine();
+
+                string nombreArchivo = $"exportacion_{DateTime.Now:yyyyMMdd_HHmmss}";
+                string rutaBase = Environment.GetFolderPath(Environment.SpecialFolder.Desktop);
+
+                switch (opcion)
+                {
+                    case "1":
+                        string rutaCSV = Path.Combine(rutaBase, $"{nombreArchivo}.csv");
+                        ExportarACSV(dataTable, rutaCSV);
+                        Console.WriteLine("Presione cualquier tecla...");
+                        Console.ReadKey();
+                        return;
+
+                    case "2":
+                        string rutaJSON = Path.Combine(rutaBase, $"{nombreArchivo}.json");
+                        ExportarAJSON(dataTable, rutaJSON);
+                        Console.WriteLine("Presione cualquier tecla...");
+                        Console.ReadKey();
+                        return;
+
+                    case "3":
+                        string rutaXML = Path.Combine(rutaBase, $"{nombreArchivo}.xml");
+                        ExportarAXML(dataTable, rutaXML);
+                        Console.WriteLine("Presione cualquier tecla...");
+                        Console.ReadKey();
+                        return;
+
+                    case "4":
+                        return;
+
+                    default:
+                        Console.WriteLine("\n? Opción no válida. Presione cualquier tecla...");
+                        Console.ReadKey();
+                        break;
+                }
+            }
         }
 
         /// <summary>
@@ -323,7 +520,7 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Muestra una página de la tabla usando foreach y LINQ.
+        /// Muestra una página de la tabla.
         /// </summary>
         private void MostrarTablaPaginada(DataTable dataTable, int filaInicio, int filaFin, int anchoColumna)
         {
@@ -338,25 +535,18 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine();
             Console.WriteLine(new string('-', Console.WindowWidth - 1));
 
-            // Mostrar datos con LINQ (Skip, Take) + foreach
-            foreach (var row in dataTable.Rows.Cast<DataRow>().Skip(filaInicio).Take(filaFin - filaInicio))
+            // Mostrar datos
+            for (int i = filaInicio; i < filaFin; i++)
             {
-                foreach (var cell in row.ItemArray.Select(cell => FormatearCelda(cell.ToString(), anchoColumna)))
+                foreach (var cell in dataTable.Rows[i].ItemArray)
                 {
-                    Console.Write(cell.PadRight(anchoColumna) + "| ");
+                    string valor = cell.ToString();
+                    if (valor.Length > anchoColumna)
+                        valor = valor.Substring(0, anchoColumna - 2) + "..";
+                    Console.Write(valor.PadRight(anchoColumna) + "| ");
                 }
                 Console.WriteLine();
             }
-        }
-
-        /// <summary>
-        /// Formatea una celda de tabla con truncamiento si es necesario.
-        /// </summary>
-        private string FormatearCelda(string valor, int anchoColumna)
-        {
-            return valor.Length > anchoColumna
-                ? valor.Substring(0, anchoColumna - 2) + ".."
-                : valor;
         }
     }
 }

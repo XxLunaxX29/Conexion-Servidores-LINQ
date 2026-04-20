@@ -2,9 +2,8 @@
 using System.Collections.Generic;
 using System.Data;
 using System.Xml.Linq;
-using System.Linq;
 
-namespace ConexionServidores
+namespace Conexion_Servidores_LINQ
 {
     /// <summary>
     /// Clase que carga archivos XML y los estructura en una tabla evitando duplicados y columnas vacías.
@@ -35,10 +34,15 @@ namespace ConexionServidores
                 var xmlDoc = XDocument.Load(xmlFilePath);
                 _dataTable = new DataTable();
 
-                // Obtener elementos con LINQ
-                var elements = xmlDoc.Descendants()
-                    .Where(e => e.Name.LocalName == elementName)
-                    .ToList();
+                // Obtener elementos sin LINQ
+                var elements = new List<XElement>();
+                foreach (var element in xmlDoc.Descendants())
+                {
+                    if (element.Name.LocalName == elementName)
+                    {
+                        elements.Add(element);
+                    }
+                }
 
                 if (elements.Count == 0)
                     throw new InvalidOperationException($"No se encontraron elementos con el nombre: {elementName}");
@@ -49,16 +53,16 @@ namespace ConexionServidores
                 Console.WriteLine("? Extrayendo columnas...");
                 var allColumns = ExtractAllColumns(elements);
 
-                // Ordenar columnas alfabéticamente con LINQ
-                var sortedColumns = allColumns.OrderBy(c => c).ToList();
+                // Ordenar columnas alfabéticamente sin LINQ
+                SortColumnsAlphabetically(allColumns);
 
                 // Crear columnas en la tabla
-                foreach (var column in sortedColumns)
+                foreach (var column in allColumns)
                 {
                     _dataTable.Columns.Add(column, typeof(string));
                 }
 
-                Console.WriteLine($"? Se crearon {sortedColumns.Count} columnas");
+                Console.WriteLine($"? Se crearon {allColumns.Count} columnas");
 
                 // Agregar filas evitando duplicados
                 var addedRows = new HashSet<string>();
@@ -70,16 +74,25 @@ namespace ConexionServidores
                 foreach (var element in elements)
                 {
                     filasEnProceso++;
-                    var rowData = sortedColumns
-                        .Select(column => GetElementValue(element, column))
-                        .ToList();
-                    
-                    var rowHash = string.Join("|", rowData);
+                    var rowData = new List<string>();
+                    var rowHash = "";
+
+                    foreach (var column in allColumns)
+                    {
+                        var value = GetElementValue(element, column);
+                        rowData.Add(value);
+                        rowHash += value + "|";
+                    }
 
                     // Verificar si la fila ya existe (evitar duplicados)
                     if (!addedRows.Contains(rowHash))
                     {
-                        _dataTable.Rows.Add(rowData.ToArray());
+                        var rowArray = new string[rowData.Count];
+                        for (int i = 0; i < rowData.Count; i++)
+                        {
+                            rowArray[i] = rowData[i];
+                        }
+                        _dataTable.Rows.Add(rowArray);
                         addedRows.Add(rowHash);
                         filasAgregadas++;
                     }
@@ -107,15 +120,53 @@ namespace ConexionServidores
         /// </summary>
         private List<string> ExtractAllColumns(List<XElement> elements)
         {
-            var columns = elements
-                .SelectMany(element => element.Attributes()
-                    .Select(attr => attr.Name.LocalName)
-                    .Concat(element.Elements()
-                        .Select(child => child.Name.LocalName)))
-                .Distinct()
-                .ToList();
+            var columns = new HashSet<string>();
 
-            return columns;
+            foreach (var element in elements)
+            {
+                // Obtener atributos
+                foreach (var attr in element.Attributes())
+                {
+                    columns.Add(attr.Name.LocalName);
+                }
+
+                // Obtener elementos hijo
+                foreach (var child in element.Elements())
+                {
+                    columns.Add(child.Name.LocalName);
+                }
+            }
+
+            // Convertir HashSet a List
+            var columnList = new List<string>();
+            foreach (var col in columns)
+            {
+                columnList.Add(col);
+            }
+
+            return columnList;
+        }
+
+        /// <summary>
+        /// Ordena una lista de strings alfabéticamente sin usar LINQ.
+        /// </summary>
+        private void SortColumnsAlphabetically(List<string> columns)
+        {
+            // Usar ordenamiento de burbuja
+            for (int i = 0; i < columns.Count - 1; i++)
+            {
+                for (int j = 0; j < columns.Count - i - 1; j++)
+                {
+                    // Comparar y intercambiar si es necesario
+                    if (string.Compare(columns[j], columns[j + 1]) > 0)
+                    {
+                        // Intercambio
+                        string temp = columns[j];
+                        columns[j] = columns[j + 1];
+                        columns[j + 1] = temp;
+                    }
+                }
+            }
         }
 
         /// <summary>
@@ -124,14 +175,14 @@ namespace ConexionServidores
         private string GetElementValue(XElement element, string columnName)
         {
             // Buscar en atributos
-            var attrValue = element.Attribute(columnName)?.Value?.Trim();
-            if (!string.IsNullOrWhiteSpace(attrValue))
-                return attrValue;
+            var attr = element.Attribute(columnName);
+            if (attr != null && !string.IsNullOrWhiteSpace(attr.Value))
+                return attr.Value.Trim();
 
             // Buscar en elementos hijo
-            var childValue = element.Element(columnName)?.Value?.Trim();
-            if (!string.IsNullOrWhiteSpace(childValue))
-                return childValue;
+            var child = element.Element(columnName);
+            if (child != null && !string.IsNullOrWhiteSpace(child.Value))
+                return child.Value.Trim();
 
             return string.Empty;
         }
@@ -155,14 +206,24 @@ namespace ConexionServidores
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
                     // Escribir encabezados
-                    var headers = _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
-                    writer.WriteLine(string.Join(",", headers));
+                    for (int i = 0; i < _dataTable.Columns.Count; i++)
+                    {
+                        if (i > 0)
+                            writer.Write(",");
+                        writer.Write(_dataTable.Columns[i].ColumnName);
+                    }
+                    writer.WriteLine();
 
                     // Escribir datos
                     foreach (DataRow row in _dataTable.Rows)
                     {
-                        var values = row.ItemArray.Select(v => $"\"{v}\"");
-                        writer.WriteLine(string.Join(",", values));
+                        for (int i = 0; i < row.ItemArray.Length; i++)
+                        {
+                            if (i > 0)
+                                writer.Write(",");
+                            writer.Write($"\"{row.ItemArray[i]}\"");
+                        }
+                        writer.WriteLine();
                     }
                 }
 
@@ -191,9 +252,9 @@ namespace ConexionServidores
             Console.WriteLine(new string('=', 80));
 
             // Mostrar encabezados
-            foreach (DataColumn column in _dataTable.Columns)
+            for (int i = 0; i < _dataTable.Columns.Count; i++)
             {
-                Console.Write(column.ColumnName.PadRight(20) + "| ");
+                Console.Write(_dataTable.Columns[i].ColumnName.PadRight(20) + "| ");
             }
             Console.WriteLine();
             Console.WriteLine(new string('-', 80));
@@ -201,9 +262,9 @@ namespace ConexionServidores
             // Mostrar datos
             foreach (DataRow row in _dataTable.Rows)
             {
-                foreach (var cell in row.ItemArray)
+                for (int i = 0; i < row.ItemArray.Length; i++)
                 {
-                    string cellValue = cell.ToString();
+                    string cellValue = row.ItemArray[i].ToString();
                     if (cellValue.Length > 20)
                         cellValue = cellValue.Substring(0, 17) + "...";
                     Console.Write(cellValue.PadRight(20) + "| ");

@@ -1,103 +1,98 @@
-﻿using Conexion_Servidores_LINQ;
-using Npgsql;
+﻿using Npgsql;
 using System.Data;
 
 namespace Conexion_Servidores_LINQ
 {
     /// <summary>
-    /// Clase para migrar datos de productos a PostgreSQL.
-    /// Crea la base de datos, tabla y sincroniza datos extraídos.
+    /// Clase para migrar datos a PostgreSQL.
+    /// Crea la base de datos y tabla dinámicas basadas en el DataTable.
     /// </summary>
     public class MigradorPostgreSQL(string connectionString)
     {
+        private const string DATABASE_NAME = "ConexionPostgreSQL";
+        private const string TABLE_NAME = "DatosImportados";
+
         /// <summary>
-        /// Migra una lista de productos primordiales a PostgreSQL.
+        /// Migra datos directamente desde un DataTable a PostgreSQL.
+        /// Crea tabla dinámica basada en las columnas del DataTable.
         /// </summary>
-        public async Task<(bool Success, string Message)> MigrarProductosAsync(List<ProductoPrimordial> productos)
+        public async Task<(bool Success, string Message)> MigrarDataTableAsync(DataTable dataTable)
         {
             try
             {
-                if (productos == null || productos.Count == 0)
+                if (dataTable == null || dataTable.Rows.Count == 0)
                 {
-                    return (false, "La lista de productos está vacía.");
+                    return (false, "El DataTable está vacío.");
                 }
 
-                // Crear base de datos y tabla
-                await CrearTablaEnPostgreSQL();
+                // Crear base de datos y tabla dinámica
+                var resultCrear = await CrearTablaDePostgreSQL(dataTable);
+                if (!resultCrear.Success)
+                {
+                    return (false, resultCrear.Message);
+                }
 
                 var builder = new NpgsqlConnectionStringBuilder(connectionString)
                 {
-                    Database = "ConexionPostgreSQL"
+                    Database = DATABASE_NAME
                 };
 
                 using var connection = new NpgsqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                int productosInsertados = 0;
-                int productosExistentes = 0;
-                var errores = new List<string>();
+                int filasInsertadas = 0;
+                int filasConError = 0;
 
-                Console.WriteLine("\n? Migrando productos a PostgreSQL...\n");
+                Console.WriteLine($"\n? Migrando {dataTable.Rows.Count} filas a PostgreSQL...\n");
 
-                foreach (var producto in productos)
+                foreach (DataRow row in dataTable.Rows)
                 {
                     try
                     {
-                        string insert = @"
-                        INSERT INTO Producto (Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario)
-                        VALUES (@Id, @Nombre, @Categoria, @Valor, @Cantidad, @PrecioUnitario)
-                        ON CONFLICT (Id) DO NOTHING";
+                        var columnasComilladas = string.Join(", ",
+                            dataTable.Columns.Cast<DataColumn>().Select(c => $"\"{c.ColumnName}\""));
+                        var parametros = string.Join(", ",
+                            dataTable.Columns.Cast<DataColumn>().Select((c, i) => $"@p{i}"));
+
+                        string insert = $"INSERT INTO \"{TABLE_NAME}\" ({columnasComilladas}) VALUES ({parametros})";
 
                         using var cmd = new NpgsqlCommand(insert, connection);
                         cmd.CommandTimeout = 30;
 
-                        cmd.Parameters.AddWithValue("@Id", (object)producto.Id ?? DBNull.Value);
-                        cmd.Parameters.AddWithValue("@Nombre", (object)producto.Nombre ?? DBNull.Value);
-                        cmd.Parameters.AddWithValue("@Categoria", (object)producto.Categoria ?? DBNull.Value);
-                        cmd.Parameters.AddWithValue("@Valor", producto.Valor);
-                        cmd.Parameters.AddWithValue("@Cantidad", producto.Cantidad);
-                        cmd.Parameters.AddWithValue("@PrecioUnitario", producto.PrecioUnitario);
-
-                        int rowsAffected = await cmd.ExecuteNonQueryAsync();
-
-                        if (rowsAffected > 0)
+                        int paramIndex = 0;
+                        foreach (DataColumn col in dataTable.Columns)
                         {
-                            productosInsertados++;
-                        }
-                        else
-                        {
-                            productosExistentes++;
+                            var valor = row[col] ?? DBNull.Value;
+                            cmd.Parameters.AddWithValue($"@p{paramIndex}", valor);
+                            paramIndex++;
                         }
 
-                        if ((productosInsertados + productosExistentes) % 100 == 0)
+                        await cmd.ExecuteNonQueryAsync();
+                        filasInsertadas++;
+
+                        if (filasInsertadas % 100 == 0)
                         {
-                            Console.Write($"\r? Procesados: {productosInsertados + productosExistentes}/{productos.Count}");
+                            Console.Write($"\r? Procesadas: {filasInsertadas}/{dataTable.Rows.Count}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        errores.Add($"Producto {producto.Id}: {ex.Message}");
-                        if (errores.Count > 20)
-                        {
-                            errores.Add("... (más errores)");
-                            break;
-                        }
+                        filasConError++;
+                        Console.Write($"\r? Fila {filasInsertadas + filasConError}: {ex.Message.Substring(0, Math.Min(50, ex.Message.Length))}");
                     }
                 }
 
-                Console.WriteLine($"\r? Migracion completada: {productosInsertados} insertados | {productosExistentes} existentes");
+                Console.WriteLine($"\r? Migración completada: {filasInsertadas} insertadas | {filasConError} con error");
 
-                string mensaje = $"Migracion exitosa:\n" +
-                    $"- Productos insertados: {productosInsertados}\n" +
-                    $"- Productos existentes: {productosExistentes}";
+                string mensaje = $"Migración exitosa a PostgreSQL:\n" +
+                    $"- Base de datos: {DATABASE_NAME}\n" +
+                    $"- Tabla: {TABLE_NAME}\n" +
+                    $"- Filas insertadas: {filasInsertadas}\n" +
+                    $"- Columnas: {dataTable.Columns.Count}";
 
-                if (errores.Count > 0)
+                if (filasConError > 0)
                 {
-                    mensaje += $"\n- Errores: {errores.Count}\n";
-                    for (int i = 0; i < Math.Min(5, errores.Count); i++)
-                    {
-                        mensaje += $"  • {errores[i]}\n";
-                    }
+                    mensaje += $"\n- Filas con error: {filasConError}";
                 }
 
                 return (true, mensaje);
@@ -106,7 +101,7 @@ namespace Conexion_Servidores_LINQ
             {
                 return (false, "Error de conexión: No se pudo conectar a PostgreSQL.\nVerifica que el servidor esté en ejecución.");
             }
-            catch (NpgsqlException ex) when (ex.Message.Contains("password"))
+            catch (NpgsqlException ex) when (ex.Message.Contains("password") || ex.Message.Contains("authentication"))
             {
                 return (false, "Error de autenticación: Credenciales incorrectas.\nVerifica el usuario y contraseña.");
             }
@@ -116,71 +111,14 @@ namespace Conexion_Servidores_LINQ
             }
             catch (Exception ex)
             {
-                return (false, $"Error: {ex.Message}");
+                return (false, $"Error inesperado: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Sincroniza un único producto a PostgreSQL.
+        /// Crea la base de datos y tabla dinámica basada en el DataTable.
         /// </summary>
-        public async Task<(bool Success, string Message)> SincronizarProductoAsync(ProductoPrimordial producto)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(producto.Id))
-                {
-                    return (false, "El ID del producto no puede estar vacío.");
-                }
-
-                var builder = new NpgsqlConnectionStringBuilder(connectionString)
-                {
-                    Database = "ConexionPostgreSQL"
-                };
-
-                using var connection = new NpgsqlConnection(builder.ConnectionString);
-                await connection.OpenAsync();
-
-                string insert = @"
-                INSERT INTO Producto (Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario)
-                VALUES (@Id, @Nombre, @Categoria, @Valor, @Cantidad, @PrecioUnitario)
-                ON CONFLICT (Id) DO UPDATE
-                SET Nombre = @Nombre, Categoria = @Categoria, Valor = @Valor, 
-                    Cantidad = @Cantidad, PrecioUnitario = @PrecioUnitario
-                WHERE Producto.Id = @Id";
-
-                using var cmd = new NpgsqlCommand(insert, connection);
-                cmd.Parameters.AddWithValue("@Id", producto.Id);
-                cmd.Parameters.AddWithValue("@Nombre", producto.Nombre ?? "");
-                cmd.Parameters.AddWithValue("@Categoria", producto.Categoria ?? "");
-                cmd.Parameters.AddWithValue("@Valor", producto.Valor);
-                cmd.Parameters.AddWithValue("@Cantidad", producto.Cantidad);
-                cmd.Parameters.AddWithValue("@PrecioUnitario", producto.PrecioUnitario);
-
-                int rowsAffected = await cmd.ExecuteNonQueryAsync();
-
-                if (rowsAffected > 0)
-                {
-                    return (true, $"? Producto {producto.Id} sincronizado correctamente");
-                }
-                else
-                {
-                    return (false, $"No se pudo sincronizar el producto {producto.Id}");
-                }
-            }
-            catch (NpgsqlException ex)
-            {
-                return (false, $"Error de PostgreSQL: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Crea la base de datos y la tabla de productos en PostgreSQL.
-        /// </summary>
-        public async Task<(bool Success, string Message)> CrearTablaEnPostgreSQL()
+        private async Task<(bool Success, string Message)> CrearTablaDePostgreSQL(DataTable dataTable)
         {
             try
             {
@@ -193,7 +131,7 @@ namespace Conexion_Servidores_LINQ
                 await connection.OpenAsync();
 
                 // Crear base de datos si no existe
-                string crearDB = "CREATE DATABASE \"ConexionPostgreSQL\" WITH ENCODING 'UTF8'";
+                string crearDB = $"CREATE DATABASE \"{DATABASE_NAME}\" WITH ENCODING 'UTF8'";
 
                 try
                 {
@@ -210,22 +148,26 @@ namespace Conexion_Servidores_LINQ
                 // Conectar a la nueva base de datos
                 var builderDB = new NpgsqlConnectionStringBuilder(connectionString)
                 {
-                    Database = "ConexionPostgreSQL"
+                    Database = DATABASE_NAME
                 };
 
                 using var connectionDB = new NpgsqlConnection(builderDB.ConnectionString);
                 await connectionDB.OpenAsync();
 
-                // Crear tabla de productos
-                string crearTabla = @"
-                CREATE TABLE IF NOT EXISTS Producto (
-                    Id VARCHAR(50) PRIMARY KEY,
-                    Nombre VARCHAR(255) NOT NULL,
-                    Categoria VARCHAR(100),
-                    Valor NUMERIC(18, 2) NOT NULL,
-                    Cantidad INTEGER NOT NULL,
-                    PrecioUnitario NUMERIC(18, 2) NOT NULL,
-                    FechaCreacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                // Construir definición de columnas basada en DataTable
+                var columnDefinitions = new List<string>();
+                foreach (DataColumn col in dataTable.Columns)
+                {
+                    string pgType = ObtenerTipoPostgreSQL(col.DataType);
+                    columnDefinitions.Add($"\"{col.ColumnName}\" {pgType}");
+                }
+
+                string columnList = string.Join(",\n                    ", columnDefinitions);
+
+                // Crear tabla dinámica
+                string crearTabla = $@"
+                CREATE TABLE IF NOT EXISTS ""{TABLE_NAME}"" (
+                    {columnList}
                 )";
 
                 using (var cmd = new NpgsqlCommand(crearTabla, connectionDB))
@@ -233,11 +175,11 @@ namespace Conexion_Servidores_LINQ
                     await cmd.ExecuteNonQueryAsync();
                 }
 
-                return (true, "Base de datos y tabla creadas correctamente");
+                return (true, $"Tabla dinámica '{TABLE_NAME}' creada correctamente con {dataTable.Columns.Count} columnas");
             }
             catch (NpgsqlException ex)
             {
-                return (false, $"Error de PostgreSQL: {ex.Message}");
+                return (false, $"Error al crear tabla en PostgreSQL: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -246,92 +188,131 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene todos los productos desde PostgreSQL.
+        /// Mapea tipos de datos .NET a tipos PostgreSQL.
         /// </summary>
-        public async Task<List<ProductoPrimordial>> ObtenerProductosDePostgreSQL()
+        private static string ObtenerTipoPostgreSQL(Type dotNetType)
         {
-            var productos = new List<ProductoPrimordial>();
-
-            try
+            return dotNetType switch
             {
-                var builder = new NpgsqlConnectionStringBuilder(connectionString)
-                {
-                    Database = "ConexionPostgreSQL"
-                };
-
-                using var connection = new NpgsqlConnection(builder.ConnectionString);
-                await connection.OpenAsync();
-
-                string query = "SELECT Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario FROM Producto ORDER BY Id";
-
-                using var cmd = new NpgsqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
-                {
-                    productos.Add(new ProductoPrimordial
-                    {
-                        Id = reader["Id"].ToString(),
-                        Nombre = reader["Nombre"].ToString(),
-                        Categoria = reader["Categoria"].ToString(),
-                        Valor = Convert.ToDecimal(reader["Valor"]),
-                        Cantidad = Convert.ToInt32(reader["Cantidad"]),
-                        PrecioUnitario = Convert.ToDecimal(reader["PrecioUnitario"])
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al obtener productos: {ex.Message}");
-            }
-
-            return productos;
+                _ when dotNetType == typeof(int) => "INTEGER",
+                _ when dotNetType == typeof(long) => "BIGINT",
+                _ when dotNetType == typeof(short) => "SMALLINT",
+                _ when dotNetType == typeof(byte) => "SMALLINT",
+                _ when dotNetType == typeof(decimal) => "NUMERIC(18, 2)",
+                _ when dotNetType == typeof(double) => "DOUBLE PRECISION",
+                _ when dotNetType == typeof(float) => "REAL",
+                _ when dotNetType == typeof(bool) => "BOOLEAN",
+                _ when dotNetType == typeof(DateTime) => "TIMESTAMP",
+                _ when dotNetType == typeof(Guid) => "UUID",
+                _ => "TEXT"
+            };
         }
 
         /// <summary>
-        /// Obtiene estadísticas de la tabla de productos.
+        /// Obtiene toda la tabla importada de PostgreSQL como DataTable completo.
         /// </summary>
-        public async Task<(int Total, decimal ValorTotal, int CantidadTotal)> ObtenerEstadisticasAsync()
+        public async Task<(bool Success, DataTable Datos, string Message)> ObtenerTablaCompletaAsync()
         {
             try
             {
                 var builder = new NpgsqlConnectionStringBuilder(connectionString)
                 {
-                    Database = "ConexionPostgreSQL"
+                    Database = DATABASE_NAME
                 };
 
                 using var connection = new NpgsqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = @"
-                SELECT 
-                    COUNT(*) as Total,
-                    COALESCE(SUM(Valor), 0) as ValorTotal,
-                    COALESCE(SUM(Cantidad), 0) as CantidadTotal
-                FROM Producto";
+                string query = $"SELECT * FROM \"{TABLE_NAME}\" ORDER BY (SELECT NULL)";
+
+                var resultados = new DataTable();
+                using var adapter = new NpgsqlDataAdapter(query, connection);
+                adapter.Fill(resultados);
+
+                if (resultados.Rows.Count == 0)
+                {
+                    return (false, resultados, "No hay datos en la tabla importada.");
+                }
+
+                string mensaje = $"Tabla '{TABLE_NAME}' obtenida correctamente:\n" +
+                    $"- Filas: {resultados.Rows.Count}\n" +
+                    $"- Columnas: {resultados.Columns.Count}";
+
+                return (true, resultados, mensaje);
+            }
+            catch (Exception ex)
+            {
+                return (false, new DataTable(), $"Error al obtener tabla: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Obtiene todos los datos de la tabla importada como DataTable.
+        /// </summary>
+        public async Task<DataTable> ObtenerDatosDePostgreSQL()
+        {
+            var resultados = new DataTable();
+
+            try
+            {
+                var builder = new NpgsqlConnectionStringBuilder(connectionString)
+                {
+                    Database = DATABASE_NAME
+                };
+
+                using var connection = new NpgsqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string query = $"SELECT * FROM \"{TABLE_NAME}\"";
+
+                using var adapter = new NpgsqlDataAdapter(query, connection);
+                adapter.Fill(resultados);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error al obtener datos de PostgreSQL: {ex.Message}");
+            }
+
+            return resultados;
+        }
+
+        /// <summary>
+        /// Obtiene estadísticas de la tabla importada.
+        /// </summary>
+        public async Task<(int TotalFilas, int TotalColumnas)> ObtenerEstadisticasAsync()
+        {
+            try
+            {
+                var builder = new NpgsqlConnectionStringBuilder(connectionString)
+                {
+                    Database = DATABASE_NAME
+                };
+
+                using var connection = new NpgsqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string query = $"SELECT COUNT(*) as Total FROM \"{TABLE_NAME}\"";
 
                 using var cmd = new NpgsqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
+                int totalFilas = (int)(await cmd.ExecuteScalarAsync() ?? 0);
 
-                if (await reader.ReadAsync())
-                {
-                    int total = Convert.ToInt32(reader["Total"]);
-                    decimal valorTotal = Convert.ToDecimal(reader["ValorTotal"]);
-                    int cantidadTotal = Convert.ToInt32(reader["CantidadTotal"]);
+                // Obtener total de columnas
+                query = $"SELECT COUNT(*) FROM information_schema.columns WHERE table_name = '{TABLE_NAME}' AND table_schema = 'public'";
 
-                    return (total, valorTotal, cantidadTotal);
-                }
+                using var cmd2 = new NpgsqlCommand(query, connection);
+                int totalColumnas = (int)(await cmd2.ExecuteScalarAsync() ?? 0);
+
+                return (totalFilas, totalColumnas);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error al obtener estadísticas: {ex.Message}");
+                return (0, 0);
             }
-
-            return (0, 0, 0);
         }
 
         /// <summary>
-        /// Elimina todos los datos de la tabla de productos.
+        /// Elimina todos los datos de la tabla importada.
         /// </summary>
         public async Task<(bool Success, string Message)> LimpiarTablaAsync()
         {
@@ -339,13 +320,13 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new NpgsqlConnectionStringBuilder(connectionString)
                 {
-                    Database = "ConexionPostgreSQL"
+                    Database = DATABASE_NAME
                 };
 
                 using var connection = new NpgsqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string delete = "TRUNCATE TABLE Producto";
+                string delete = $"TRUNCATE TABLE \"{TABLE_NAME}\"";
 
                 using var cmd = new NpgsqlCommand(delete, connection);
                 await cmd.ExecuteNonQueryAsync();
@@ -354,8 +335,36 @@ namespace Conexion_Servidores_LINQ
             }
             catch (Exception ex)
             {
-
                 return (false, $"Error al limpiar tabla: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Elimina la base de datos completa de PostgreSQL.
+        /// </summary>
+        public async Task<(bool Success, string Message)> EliminarBaseDatosAsync()
+        {
+            try
+            {
+                var builder = new NpgsqlConnectionStringBuilder(connectionString)
+                {
+                    Database = "postgres"
+                };
+
+                using var connection = new NpgsqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string delete = $"SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '{DATABASE_NAME}' AND pid <> pg_backend_pid(); DROP DATABASE IF EXISTS \"{DATABASE_NAME}\"";
+
+                using var cmd = new NpgsqlCommand(delete, connection);
+                cmd.CommandTimeout = 60;
+                await cmd.ExecuteNonQueryAsync();
+
+                return (true, $"Base de datos '{DATABASE_NAME}' eliminada correctamente");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error al eliminar base de datos: {ex.Message}");
             }
         }
     }

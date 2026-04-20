@@ -1,104 +1,105 @@
-﻿using Conexion_Servidores_LINQ;
-using Microsoft.Data.SqlClient;
+﻿using Microsoft.Data.SqlClient;
 using System.Data;
 using System.Net;
 
 namespace Conexion_Servidores_LINQ
 {
     /// <summary>
-    /// Clase para migrar datos de productos a SQL Server.
-    /// Crea la base de datos, tabla y sincroniza datos extraídos.
+    /// Clase para migrar datos a SQL Server.
+    /// Crea la base de datos y tabla dinámicas basadas en el DataTable.
     /// </summary>
     public class MigradorSQL(string connectionString)
     {
+        private const string DATABASE_NAME = "ConexionSQL";
+        private const string TABLE_NAME = "DatosImportados";
+
         static MigradorSQL()
         {
-            // Ignorar validación de certificado SSL (solo para desarrollo)
             SqlConnection.ClearAllPools();
             ServicePointManager.ServerCertificateValidationCallback = (sender, certificate, chain, sslPolicyErrors) => true;
         }
 
         /// <summary>
-        /// Migra una lista de productos primordiales a SQL Server.
+        /// Migra datos directamente desde un DataTable a SQL Server.
+        /// Crea tabla dinámica basada en las columnas del DataTable.
         /// </summary>
-        public async Task<(bool Success, string Message)> MigrarProductosAsync(List<ProductoPrimordial> productos)
+        public async Task<(bool Success, string Message)> MigrarDataTableAsync(DataTable dataTable)
         {
             try
             {
-                if (productos == null || productos.Count == 0)
+                if (dataTable == null || dataTable.Rows.Count == 0)
                 {
-                    return (false, "La lista de productos está vacía.");
+                    return (false, "El DataTable está vacío.");
                 }
 
-                // Crear base de datos y tabla
-                await CrearTablaEnSQL();
+                // Crear base de datos y tabla dinámica
+                var resultCrear = await CrearTablaDeSQL(dataTable);
+                if (!resultCrear.Success)
+                {
+                    return (false, resultCrear.Message);
+                }
 
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
-                    Encrypt = SqlConnectionEncryptOption.Optional, // O usar 'Mandatory' si SSL es obligatorio
-                    TrustServerCertificate = true // Confiar en cualquier certificado (solo desarrollo)
+                    InitialCatalog = DATABASE_NAME,
+                    Encrypt = SqlConnectionEncryptOption.Optional,
+                    TrustServerCertificate = true
                 };
 
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                int productosInsertados = 0;
-                int productosExistentes = 0;
-                var errores = new List<string>();
+                int filasInsertadas = 0;
+                int filasConError = 0;
 
-                Console.WriteLine("\n⏳ Migrando productos a SQL Server...\n");
+                Console.WriteLine($"\n⏳ Migrando {dataTable.Rows.Count} filas a SQL Server...\n");
 
-                foreach (var producto in productos)
+                foreach (DataRow row in dataTable.Rows)
                 {
                     try
                     {
-                        string insert = @"
-                        IF NOT EXISTS (SELECT 1 FROM Producto WHERE Id = @Id)
-                        BEGIN
-                            INSERT INTO Producto (Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario)
-                            VALUES (@Id, @Nombre, @Categoria, @Valor, @Cantidad, @PrecioUnitario)
-                        END";
+                        var columnasConCorchetes = string.Join(", ",
+                            dataTable.Columns.Cast<DataColumn>().Select(c => $"[{c.ColumnName}]"));
+                        var parametros = string.Join(", ",
+                            dataTable.Columns.Cast<DataColumn>().Select(c => $"@{c.ColumnName}"));
+
+                        string insert = $"INSERT INTO [{TABLE_NAME}] ({columnasConCorchetes}) VALUES ({parametros})";
 
                         using var cmd = new SqlCommand(insert, connection);
-                        cmd.Parameters.AddWithValue("@Id", producto.Id ?? "");
-                        cmd.Parameters.AddWithValue("@Nombre", producto.Nombre ?? "");
-                        cmd.Parameters.AddWithValue("@Categoria", producto.Categoria ?? "");
-                        cmd.Parameters.AddWithValue("@Valor", producto.Valor);
-                        cmd.Parameters.AddWithValue("@Cantidad", producto.Cantidad);
-                        cmd.Parameters.AddWithValue("@PrecioUnitario", producto.PrecioUnitario);
+                        cmd.CommandTimeout = 30;
 
-                        int rowsAffected = await cmd.ExecuteNonQueryAsync();
-
-                        if (rowsAffected > 0)
+                        foreach (DataColumn col in dataTable.Columns)
                         {
-                            productosInsertados++;
-                        }
-                        else
-                        {
-                            productosExistentes++;
+                            var valor = row[col] ?? DBNull.Value;
+                            cmd.Parameters.AddWithValue($"@{col.ColumnName}", valor);
                         }
 
-                        if ((productosInsertados + productosExistentes) % 100 == 0)
+                        await cmd.ExecuteNonQueryAsync();
+                        filasInsertadas++;
+
+                        if (filasInsertadas % 100 == 0)
                         {
-                            Console.Write($"\r✓ Procesados: {productosInsertados + productosExistentes}/{productos.Count}");
+                            Console.Write($"\r✓ Procesadas: {filasInsertadas}/{dataTable.Rows.Count}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        errores.Add($"Producto {producto.Id}: {ex.Message}");
+                        filasConError++;
+                        Console.Write($"\r⚠ Fila {filasInsertadas + filasConError}: {ex.Message.Substring(0, Math.Min(50, ex.Message.Length))}");
                     }
                 }
 
-                Console.WriteLine($"\r✓ Migracion completada: {productosInsertados} insertados | {productosExistentes} existentes");
+                Console.WriteLine($"\r✓ Migración completada: {filasInsertadas} insertadas | {filasConError} con error");
 
-                string mensaje = $"Migracion exitosa:\n" +
-                    $"- Productos insertados: {productosInsertados}\n" +
-                    $"- Productos existentes: {productosExistentes}";
+                string mensaje = $"Migración exitosa a SQL Server:\n" +
+                    $"- Base de datos: {DATABASE_NAME}\n" +
+                    $"- Tabla: {TABLE_NAME}\n" +
+                    $"- Filas insertadas: {filasInsertadas}\n" +
+                    $"- Columnas: {dataTable.Columns.Count}";
 
-                if (errores.Count > 0)
+                if (filasConError > 0)
                 {
-                    mensaje += $"\n- Errores: {errores.Count}";
+                    mensaje += $"\n- Filas con error: {filasConError}";
                 }
 
                 return (true, mensaje);
@@ -113,83 +114,18 @@ namespace Conexion_Servidores_LINQ
             }
             catch (SqlException ex)
             {
-                return (false, $"Error de SQL: {ex.Message}");
+                return (false, $"Error de SQL Server: {ex.Message}");
             }
             catch (Exception ex)
             {
-                return (false, $"Error: {ex.Message}");
+                return (false, $"Error inesperado: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Sincroniza un único producto a SQL Server.
+        /// Crea la base de datos y tabla dinámica basada en el DataTable.
         /// </summary>
-        public async Task<(bool Success, string Message)> SincronizarProductoAsync(ProductoPrimordial producto)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(producto.Id))
-                {
-                    return (false, "El ID del producto no puede estar vacío.");
-                }
-
-                var builder = new SqlConnectionStringBuilder(connectionString)
-                {
-                    InitialCatalog = "ConexionSQL",
-                    Encrypt = SqlConnectionEncryptOption.Optional,
-                    TrustServerCertificate = true
-                };
-
-                using var connection = new SqlConnection(builder.ConnectionString);
-                await connection.OpenAsync();
-
-                string insert = @"
-                IF NOT EXISTS (SELECT 1 FROM Producto WHERE Id = @Id)
-                BEGIN
-                    INSERT INTO Producto (Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario)
-                    VALUES (@Id, @Nombre, @Categoria, @Valor, @Cantidad, @PrecioUnitario)
-                END
-                ELSE
-                BEGIN
-                    UPDATE Producto
-                    SET Nombre = @Nombre, Categoria = @Categoria, Valor = @Valor, 
-                        Cantidad = @Cantidad, PrecioUnitario = @PrecioUnitario
-                    WHERE Id = @Id
-                END";
-
-                using var cmd = new SqlCommand(insert, connection);
-                cmd.Parameters.AddWithValue("@Id", producto.Id);
-                cmd.Parameters.AddWithValue("@Nombre", producto.Nombre ?? "");
-                cmd.Parameters.AddWithValue("@Categoria", producto.Categoria ?? "");
-                cmd.Parameters.AddWithValue("@Valor", producto.Valor);
-                cmd.Parameters.AddWithValue("@Cantidad", producto.Cantidad);
-                cmd.Parameters.AddWithValue("@PrecioUnitario", producto.PrecioUnitario);
-
-                int rowsAffected = await cmd.ExecuteNonQueryAsync();
-
-                if (rowsAffected > 0)
-                {
-                    return (true, $"✓ Producto {producto.Id} sincronizado correctamente");
-                }
-                else
-                {
-                    return (false, $"No se pudo sincronizar el producto {producto.Id}");
-                }
-            }
-            catch (SqlException ex)
-            {
-                return (false, $"Error de SQL: {ex.Message}");
-            }
-            catch (Exception ex)
-            {
-                return (false, $"Error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Crea la base de datos y la tabla de productos en SQL Server.
-        /// </summary>
-        public async Task<(bool Success, string Message)> CrearTablaEnSQL()
+        private async Task<(bool Success, string Message)> CrearTablaDeSQL(DataTable dataTable)
         {
             try
             {
@@ -204,10 +140,10 @@ namespace Conexion_Servidores_LINQ
                 await connection.OpenAsync();
 
                 // Crear base de datos
-                string crearDB = @"
-                IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = 'ConexionSQL')
+                string crearDB = $@"
+                IF NOT EXISTS (SELECT name FROM sys.databases WHERE name = N'{DATABASE_NAME}')
                 BEGIN
-                    CREATE DATABASE ConexionSQL;
+                    CREATE DATABASE [{DATABASE_NAME}];
                 END";
 
                 using (var cmd = new SqlCommand(crearDB, connection))
@@ -215,19 +151,23 @@ namespace Conexion_Servidores_LINQ
                     await cmd.ExecuteNonQueryAsync();
                 }
 
-                connection.ChangeDatabase("ConexionSQL");
+                connection.ChangeDatabase(DATABASE_NAME);
 
-                // Crear tabla de productos
-                string crearTabla = @"
-                IF NOT EXISTS (SELECT * FROM sysobjects WHERE name='Producto' AND xtype='U')
-                CREATE TABLE Producto (
-                    Id NVARCHAR(50) PRIMARY KEY,
-                    Nombre NVARCHAR(255) NOT NULL,
-                    Categoria NVARCHAR(100),
-                    Valor DECIMAL(18, 2) NOT NULL,
-                    Cantidad INT NOT NULL,
-                    PrecioUnitario DECIMAL(18, 2) NOT NULL,
-                    FechaCreacion DATETIME DEFAULT GETDATE()
+                // Construir definición de columnas basada en DataTable
+                var columnDefinitions = new List<string>();
+                foreach (DataColumn col in dataTable.Columns)
+                {
+                    string sqlType = ObtenerTipoSQL(col.DataType);
+                    columnDefinitions.Add($"[{col.ColumnName}] {sqlType}");
+                }
+
+                string columnList = string.Join(",\n                    ", columnDefinitions);
+
+                // Crear tabla dinámica
+                string crearTabla = $@"
+                IF NOT EXISTS (SELECT * FROM sys.objects WHERE name=N'{TABLE_NAME}' AND type='U')
+                CREATE TABLE [{TABLE_NAME}] (
+                    {columnList}
                 )";
 
                 using (var cmd = new SqlCommand(crearTabla, connection))
@@ -235,11 +175,11 @@ namespace Conexion_Servidores_LINQ
                     await cmd.ExecuteNonQueryAsync();
                 }
 
-                return (true, "Base de datos y tabla creadas correctamente");
+                return (true, $"Tabla dinámica '{TABLE_NAME}' creada correctamente con {dataTable.Columns.Count} columnas");
             }
             catch (SqlException ex)
             {
-                return (false, $"Error de SQL: {ex.Message}");
+                return (false, $"Error al crear tabla en SQL Server: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -248,60 +188,38 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene todos los productos desde SQL Server.
+        /// Mapea tipos de datos .NET a tipos SQL Server.
         /// </summary>
-        public async Task<List<ProductoPrimordial>> ObtenerProductosDeSQL()
+        private static string ObtenerTipoSQL(Type dotNetType)
         {
-            var productos = new List<ProductoPrimordial>();
-
-            try
+            return dotNetType switch
             {
-                var builder = new SqlConnectionStringBuilder(connectionString)
-                {
-                    InitialCatalog = "ConexionSQL",
-                    Encrypt = SqlConnectionEncryptOption.Optional,
-                    TrustServerCertificate = true
-                };
-
-                using var connection = new SqlConnection(builder.ConnectionString);
-                await connection.OpenAsync();
-
-                string query = "SELECT Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario FROM Producto ORDER BY Id";
-
-                using var cmd = new SqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
-                {
-                    productos.Add(new ProductoPrimordial
-                    {
-                        Id = reader["Id"].ToString(),
-                        Nombre = reader["Nombre"].ToString(),
-                        Categoria = reader["Categoria"].ToString(),
-                        Valor = Convert.ToDecimal(reader["Valor"]),
-                        Cantidad = Convert.ToInt32(reader["Cantidad"]),
-                        PrecioUnitario = Convert.ToDecimal(reader["PrecioUnitario"])
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al obtener productos: {ex.Message}");
-            }
-
-            return productos;
+                _ when dotNetType == typeof(int) => "INT",
+                _ when dotNetType == typeof(long) => "BIGINT",
+                _ when dotNetType == typeof(short) => "SMALLINT",
+                _ when dotNetType == typeof(byte) => "TINYINT",
+                _ when dotNetType == typeof(decimal) => "DECIMAL(18, 2)",
+                _ when dotNetType == typeof(double) => "FLOAT",
+                _ when dotNetType == typeof(float) => "REAL",
+                _ when dotNetType == typeof(bool) => "BIT",
+                _ when dotNetType == typeof(DateTime) => "DATETIME2",
+                _ when dotNetType == typeof(Guid) => "UNIQUEIDENTIFIER",
+                _ => "NVARCHAR(MAX)"
+            };
         }
 
         /// <summary>
-        /// Obtiene estadísticas de la tabla de productos.
+        /// Obtiene todos los datos de la tabla importada como DataTable.
         /// </summary>
-        public async Task<(int Total, decimal ValorTotal, int CantidadTotal)> ObtenerEstadisticasAsync()
+        public async Task<DataTable> ObtenerDatosDeSQL()
         {
+            var resultados = new DataTable();
+
             try
             {
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
+                    InitialCatalog = DATABASE_NAME,
                     Encrypt = SqlConnectionEncryptOption.Optional,
                     TrustServerCertificate = true
                 };
@@ -309,35 +227,95 @@ namespace Conexion_Servidores_LINQ
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = @"
-                SELECT 
-                    COUNT(*) as Total,
-                    ISNULL(SUM(Valor), 0) as ValorTotal,
-                    ISNULL(SUM(Cantidad), 0) as CantidadTotal
-                FROM Producto";
+                // Verificar que la tabla existe
+                string verificarTabla = $@"
+                IF NOT EXISTS (SELECT * FROM sys.objects WHERE name=N'{TABLE_NAME}' AND type='U')
+                BEGIN
+                    RAISERROR('La tabla {TABLE_NAME} no existe', 16, 1)
+                END";
+
+                using (var cmd = new SqlCommand(verificarTabla, connection))
+                {
+                    await cmd.ExecuteNonQueryAsync();
+                }
+
+                string query = $"SELECT * FROM [{TABLE_NAME}] ORDER BY (SELECT NULL)";
+
+                using var cmd2 = new SqlCommand(query, connection);
+                cmd2.CommandTimeout = 60;
+
+                using var adapter = new SqlDataAdapter(cmd2);
+                adapter.Fill(resultados);
+
+                if (resultados.Rows.Count == 0)
+                {
+                    Console.WriteLine($"⚠ La tabla '{TABLE_NAME}' existe pero está vacía.");
+                }
+
+                return resultados;
+            }
+            catch (SqlException ex) when (ex.Number == -1)
+            {
+                Console.WriteLine("✗ Error de conexión: Timeout o instancia no encontrada.");
+                return resultados;
+            }
+            catch (SqlException ex) when (ex.Number == 18456)
+            {
+                Console.WriteLine("✗ Error de autenticación: Credenciales incorrectas.");
+                return resultados;
+            }
+            catch (SqlException ex)
+            {
+                Console.WriteLine($"✗ Error de SQL Server: {ex.Message}");
+                return resultados;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"✗ Error inesperado: {ex.Message}");
+                return resultados;
+            }
+        }
+
+        /// <summary>
+        /// Obtiene estadísticas de la tabla importada.
+        /// </summary>
+        public async Task<(int TotalFilas, int TotalColumnas)> ObtenerEstadisticasAsync()
+        {
+            try
+            {
+                var builder = new SqlConnectionStringBuilder(connectionString)
+                {
+                    InitialCatalog = DATABASE_NAME,
+                    Encrypt = SqlConnectionEncryptOption.Optional,
+                    TrustServerCertificate = true
+                };
+
+                using var connection = new SqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string query = $"SELECT COUNT(*) as Total FROM [{TABLE_NAME}]";
 
                 using var cmd = new SqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
+                int totalFilas = (int)await cmd.ExecuteScalarAsync();
 
-                if (await reader.ReadAsync())
-                {
-                    int total = Convert.ToInt32(reader["Total"]);
-                    decimal valorTotal = Convert.ToDecimal(reader["ValorTotal"]);
-                    int cantidadTotal = Convert.ToInt32(reader["CantidadTotal"]);
+                // Obtener total de columnas
+                query = $@"SELECT COUNT(*) FROM INFORMATION_SCHEMA.COLUMNS 
+                           WHERE TABLE_NAME = '{TABLE_NAME}' AND TABLE_SCHEMA = 'dbo'";
 
-                    return (total, valorTotal, cantidadTotal);
-                }
+                using var cmd2 = new SqlCommand(query, connection);
+                int totalColumnas = (int)await cmd2.ExecuteScalarAsync();
+
+                return (totalFilas, totalColumnas);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error al obtener estadísticas: {ex.Message}");
+                return (0, 0);
             }
-
-            return (0, 0, 0);
         }
 
         /// <summary>
-        /// Elimina todos los datos de la tabla de productos.
+        /// Elimina todos los datos de la tabla importada.
         /// </summary>
         public async Task<(bool Success, string Message)> LimpiarTablaAsync()
         {
@@ -345,7 +323,7 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new SqlConnectionStringBuilder(connectionString)
                 {
-                    InitialCatalog = "ConexionSQL",
+                    InitialCatalog = DATABASE_NAME,
                     Encrypt = SqlConnectionEncryptOption.Optional,
                     TrustServerCertificate = true
                 };
@@ -353,7 +331,7 @@ namespace Conexion_Servidores_LINQ
                 using var connection = new SqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string delete = "TRUNCATE TABLE Producto";
+                string delete = $"TRUNCATE TABLE [{TABLE_NAME}]";
 
                 using var cmd = new SqlCommand(delete, connection);
                 await cmd.ExecuteNonQueryAsync();
@@ -363,6 +341,42 @@ namespace Conexion_Servidores_LINQ
             catch (Exception ex)
             {
                 return (false, $"Error al limpiar tabla: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Elimina la base de datos completa de SQL Server.
+        /// </summary>
+        public async Task<(bool Success, string Message)> EliminarBaseDatosAsync()
+        {
+            try
+            {
+                var builder = new SqlConnectionStringBuilder(connectionString)
+                {
+                    InitialCatalog = "master",
+                    Encrypt = SqlConnectionEncryptOption.Optional,
+                    TrustServerCertificate = true
+                };
+
+                using var connection = new SqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string delete = $@"
+                IF EXISTS (SELECT name FROM sys.databases WHERE name = N'{DATABASE_NAME}')
+                BEGIN
+                    ALTER DATABASE [{DATABASE_NAME}] SET SINGLE_USER WITH ROLLBACK IMMEDIATE;
+                    DROP DATABASE [{DATABASE_NAME}];
+                END";
+
+                using var cmd = new SqlCommand(delete, connection);
+                cmd.CommandTimeout = 60;
+                await cmd.ExecuteNonQueryAsync();
+
+                return (true, $"Base de datos '{DATABASE_NAME}' eliminada correctamente");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error al eliminar base de datos: {ex.Message}");
             }
         }
     }

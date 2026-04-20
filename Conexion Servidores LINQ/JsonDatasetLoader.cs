@@ -1,17 +1,18 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Data;
-using System.Linq;
 using System.Text.Json;
 
 namespace Conexion_Servidores_LINQ
 {
     /// <summary>
     /// Clase que carga archivos JSON y los estructura en una tabla evitando duplicados y columnas vacías.
+    /// Utiliza Quick Sort y Bubble Sort para ordenamiento en lugar de LINQ.
     /// </summary>
     public class JsonDatasetLoader
     {
         private DataTable _dataTable;
+        private bool _usarQuickSort = true; // true para Quick Sort, false para Bubble Sort
 
         public JsonDatasetLoader()
         {
@@ -49,19 +50,30 @@ namespace Conexion_Servidores_LINQ
                     // Detectar si es un array o un objeto único
                     if (root.ValueKind == JsonValueKind.Array)
                     {
-                        elementos = root.EnumerateArray().ToList();
+                        foreach (var elemento in root.EnumerateArray())
+                        {
+                            elementos.Add(elemento);
+                        }
                     }
                     else if (root.ValueKind == JsonValueKind.Object)
                     {
-                        // Buscar arrays dentro del objeto
-                        var arrayProperties = root.EnumerateObject()
-                            .Where(p => p.Value.ValueKind == JsonValueKind.Array)
-                            .ToList();
+                        // Buscar arrays dentro del objeto sin LINQ
+                        var arrayProperties = new List<JsonProperty>();
+                        foreach (var propiedad in root.EnumerateObject())
+                        {
+                            if (propiedad.Value.ValueKind == JsonValueKind.Array)
+                            {
+                                arrayProperties.Add(propiedad);
+                            }
+                        }
 
                         if (arrayProperties.Count > 0)
                         {
                             // Usar el primer array encontrado
-                            elementos = arrayProperties[0].Value.EnumerateArray().ToList();
+                            foreach (var elemento in arrayProperties[0].Value.EnumerateArray())
+                            {
+                                elementos.Add(elemento);
+                            }
                         }
                         else
                         {
@@ -135,18 +147,19 @@ namespace Conexion_Servidores_LINQ
             }
             catch (JsonException ex)
             {
-                Console.WriteLine($"Error al parsear JSON: {ex.Message}");
+                Console.WriteLine($"? Error al parsear JSON: {ex.Message}");
                 throw;
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al cargar el archivo JSON: {ex.Message}");
+                Console.WriteLine($"? Error al cargar el archivo JSON: {ex.Message}");
                 throw;
             }
         }
 
         /// <summary>
         /// Extrae todas las claves únicas del conjunto de elementos JSON.
+        /// Ordena usando Quick Sort o Bubble Sort según el atributo _usarQuickSort.
         /// </summary>
         private List<string> ExtraerTodasLasClaves(List<JsonElement> elementos)
         {
@@ -163,7 +176,94 @@ namespace Conexion_Servidores_LINQ
                 }
             }
 
-            return claves.OrderBy(c => c).ToList();
+            // Convertir HashSet a List
+            var clavesList = new List<string>();
+            foreach (var clave in claves)
+            {
+                clavesList.Add(clave);
+            }
+
+            // Ordenar usando Quick Sort o Bubble Sort
+            if (_usarQuickSort)
+            {
+                OrdenarConQuickSort(clavesList, 0, clavesList.Count - 1);
+            }
+            else
+            {
+                OrdenarConBubbleSort(clavesList);
+            }
+
+            return clavesList;
+        }
+
+        /// <summary>
+        /// Ordena una lista de strings usando Quick Sort (divide y conquista).
+        /// </summary>
+        private void OrdenarConQuickSort(List<string> items, int izquierda, int derecha)
+        {
+            if (izquierda < derecha)
+            {
+                int pivote = Particionar(items, izquierda, derecha);
+                OrdenarConQuickSort(items, izquierda, pivote - 1);
+                OrdenarConQuickSort(items, pivote + 1, derecha);
+            }
+        }
+
+        /// <summary>
+        /// Particiona la lista para Quick Sort usando el último elemento como pivote.
+        /// </summary>
+        private int Particionar(List<string> items, int izquierda, int derecha)
+        {
+            string pivote = items[derecha];
+            int i = izquierda - 1;
+
+            for (int j = izquierda; j < derecha; j++)
+            {
+                if (string.Compare(items[j], pivote) < 0)
+                {
+                    i++;
+                    // Intercambiar
+                    string temp = items[i];
+                    items[i] = items[j];
+                    items[j] = temp;
+                }
+            }
+
+            // Intercambiar pivote a su posición correcta
+            string tempPivote = items[i + 1];
+            items[i + 1] = items[derecha];
+            items[derecha] = tempPivote;
+
+            return i + 1;
+        }
+
+        /// <summary>
+        /// Ordena una lista de strings usando Bubble Sort (comparación simple).
+        /// </summary>
+        private void OrdenarConBubbleSort(List<string> items)
+        {
+            int n = items.Count;
+
+            for (int i = 0; i < n - 1; i++)
+            {
+                bool huboIntercambio = false;
+
+                for (int j = 0; j < n - i - 1; j++)
+                {
+                    if (string.Compare(items[j], items[j + 1]) > 0)
+                    {
+                        // Intercambiar
+                        string temp = items[j];
+                        items[j] = items[j + 1];
+                        items[j + 1] = temp;
+                        huboIntercambio = true;
+                    }
+                }
+
+                // Optimización: si no hay intercambios, la lista ya está ordenada
+                if (!huboIntercambio)
+                    break;
+            }
         }
 
         /// <summary>
@@ -214,17 +314,24 @@ namespace Conexion_Servidores_LINQ
                     return string.Empty;
 
                 case JsonValueKind.Array:
-                    var items = elemento.EnumerateArray()
-                        .Select(e => ConvertirValorJson(e))
-                        .Where(s => !string.IsNullOrEmpty(s))
-                        .ToList();
+                    var items = new List<string>();
+                    foreach (var item in elemento.EnumerateArray())
+                    {
+                        string valor = ConvertirValorJson(item);
+                        if (!string.IsNullOrEmpty(valor))
+                        {
+                            items.Add(valor);
+                        }
+                    }
                     return string.Join("; ", items);
 
                 case JsonValueKind.Object:
                     // Para objetos anidados, crear una representación simple
-                    var propiedades = elemento.EnumerateObject()
-                        .Select(p => $"{p.Name}: {ConvertirValorJson(p.Value)}")
-                        .ToList();
+                    var propiedades = new List<string>();
+                    foreach (var prop in elemento.EnumerateObject())
+                    {
+                        propiedades.Add($"{prop.Name}: {ConvertirValorJson(prop.Value)}");
+                    }
                     return "{" + string.Join(", ", propiedades) + "}";
 
                 default:
@@ -241,8 +348,16 @@ namespace Conexion_Servidores_LINQ
 
             foreach (DataColumn column in _dataTable.Columns)
             {
-                bool estaVacia = _dataTable.AsEnumerable()
-                    .All(row => string.IsNullOrWhiteSpace(row[column].ToString()));
+                bool estaVacia = true;
+
+                foreach (DataRow row in _dataTable.Rows)
+                {
+                    if (!string.IsNullOrWhiteSpace(row[column].ToString()))
+                    {
+                        estaVacia = false;
+                        break;
+                    }
+                }
 
                 if (estaVacia)
                     columnasVacias.Add(column);
@@ -273,22 +388,32 @@ namespace Conexion_Servidores_LINQ
                 using (var writer = new StreamWriter(csvFilePath, false, System.Text.Encoding.UTF8))
                 {
                     // Escribir encabezados
-                    var headers = _dataTable.Columns.Cast<DataColumn>().Select(c => c.ColumnName);
-                    writer.WriteLine(string.Join(",", headers));
+                    for (int i = 0; i < _dataTable.Columns.Count; i++)
+                    {
+                        if (i > 0)
+                            writer.Write(",");
+                        writer.Write(_dataTable.Columns[i].ColumnName);
+                    }
+                    writer.WriteLine();
 
                     // Escribir datos
                     foreach (DataRow row in _dataTable.Rows)
                     {
-                        var values = row.ItemArray.Select(v => $"\"{v}\"");
-                        writer.WriteLine(string.Join(",", values));
+                        for (int i = 0; i < row.ItemArray.Length; i++)
+                        {
+                            if (i > 0)
+                                writer.Write(",");
+                            writer.Write($"\"{row.ItemArray[i]}\"");
+                        }
+                        writer.WriteLine();
                     }
                 }
 
-                Console.WriteLine($"Tabla exportada correctamente a: {csvFilePath}");
+                Console.WriteLine($"? Tabla exportada correctamente a: {csvFilePath}");
             }
             catch (Exception ex)
             {
-                Console.WriteLine($"Error al exportar a CSV: {ex.Message}");
+                Console.WriteLine($"? Error al exportar a CSV: {ex.Message}");
                 throw;
             }
         }
@@ -309,9 +434,9 @@ namespace Conexion_Servidores_LINQ
             Console.WriteLine(new string('=', 80));
 
             // Mostrar encabezados
-            foreach (DataColumn column in _dataTable.Columns)
+            for (int i = 0; i < _dataTable.Columns.Count; i++)
             {
-                Console.Write(column.ColumnName.PadRight(20) + "| ");
+                Console.Write(_dataTable.Columns[i].ColumnName.PadRight(20) + "| ");
             }
             Console.WriteLine();
             Console.WriteLine(new string('-', 80));
@@ -319,9 +444,9 @@ namespace Conexion_Servidores_LINQ
             // Mostrar datos
             foreach (DataRow row in _dataTable.Rows)
             {
-                foreach (var cell in row.ItemArray)
+                for (int i = 0; i < row.ItemArray.Length; i++)
                 {
-                    Console.Write(cell.ToString().PadRight(20).Substring(0, 20) + "| ");
+                    Console.Write(row.ItemArray[i].ToString().PadRight(20).Substring(0, 20) + "| ");
                 }
                 Console.WriteLine();
             }

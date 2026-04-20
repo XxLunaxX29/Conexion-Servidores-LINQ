@@ -1,157 +1,112 @@
-﻿using Conexion_Servidores_LINQ;
+﻿using MySql.Data;
+using MySql.Data.MySqlClient;
 using MySqlConnector;
 using System.Data;
 
 namespace Conexion_Servidores_LINQ
 {
     /// <summary>
-    /// Clase para migrar datos de productos a MariaDB.
-    /// Crea la base de datos, tabla y sincroniza datos extraídos.
+    /// Clase para migrar datos a MariaDB.
+    /// Crea la base de datos y tabla dinámicas basadas en el DataTable.
     /// </summary>
     public class MigradorMariaDB(string connectionString)
     {
-        private const string BaseDatos = "ConexionSQL";
+        private const string DATABASE_NAME = "ConexionSQL";
+        private const string TABLE_NAME = "DatosImportados";
 
         /// <summary>
-        /// Migra una lista de productos primordiales a MariaDB.
+        /// Migra datos directamente desde un DataTable a MariaDB.
+        /// Crea tabla dinámica basada en las columnas del DataTable.
         /// </summary>
-        public async Task<(bool Success, string Message)> MigrarProductosAsync(List<ProductoPrimordial> productos)
+        public async Task<(bool Success, string Message)> MigrarDataTableAsync(DataTable dataTable)
         {
             try
             {
-                if (productos == null || productos.Count == 0)
+                if (dataTable == null || dataTable.Rows.Count == 0)
                 {
-                    return (false, "La lista de productos está vacía.");
+                    return (false, "El DataTable está vacío.");
                 }
 
-                // Crear base de datos y tabla
-                await CrearTablaEnMariaDB();
+                // Crear base de datos y tabla dinámica
+                var resultCrear = await CrearTablaDeMariaDB(dataTable);
+                if (!resultCrear.Success)
+                {
+                    return (false, resultCrear.Message);
+                }
 
                 var builder = new MySqlConnectionStringBuilder(connectionString)
                 {
-                    Database = BaseDatos,
-                    SslMode = MySqlSslMode.None
+                    Database = DATABASE_NAME,
+                    SslMode = MySqlSslMode.Disabled
                 };
 
                 using var connection = new MySqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                int productosInsertados = 0;
-                int productosExistentes = 0;
-                var errores = new List<string>();
+                int filasInsertadas = 0;
+                int filasConError = 0;
 
-                Console.WriteLine("\n? Migrando productos a MariaDB...\n");
+                Console.WriteLine($"\n? Migrando {dataTable.Rows.Count} filas a MariaDB...\n");
 
-                foreach (var producto in productos)
+                foreach (DataRow row in dataTable.Rows)
                 {
                     try
                     {
-                        string insert = @"
-                        INSERT IGNORE INTO Producto (Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario)
-                        VALUES (@Id, @Nombre, @Categoria, @Valor, @Cantidad, @PrecioUnitario)";
+                        var columnasComilladas = string.Join(", ",
+                            dataTable.Columns.Cast<DataColumn>().Select(c => $"`{c.ColumnName}`"));
+                        var parametros = string.Join(", ",
+                            dataTable.Columns.Cast<DataColumn>().Select((c, i) => $"@p{i}"));
+
+                        string insert = $"INSERT INTO `{TABLE_NAME}` ({columnasComilladas}) VALUES ({parametros})";
 
                         using var cmd = new MySqlCommand(insert, connection);
-                        cmd.Parameters.AddWithValue("@Id", producto.Id ?? "");
-                        cmd.Parameters.AddWithValue("@Nombre", producto.Nombre ?? "");
-                        cmd.Parameters.AddWithValue("@Categoria", producto.Categoria ?? "");
-                        cmd.Parameters.AddWithValue("@Valor", producto.Valor);
-                        cmd.Parameters.AddWithValue("@Cantidad", producto.Cantidad);
-                        cmd.Parameters.AddWithValue("@PrecioUnitario", producto.PrecioUnitario);
+                        cmd.CommandTimeout = 30;
 
-                        int rowsAffected = await cmd.ExecuteNonQueryAsync();
-
-                        if (rowsAffected > 0)
+                        int paramIndex = 0;
+                        foreach (DataColumn col in dataTable.Columns)
                         {
-                            productosInsertados++;
-                        }
-                        else
-                        {
-                            productosExistentes++;
+                            var valor = row[col] ?? DBNull.Value;
+                            cmd.Parameters.AddWithValue($"@p{paramIndex}", valor);
+                            paramIndex++;
                         }
 
-                        if ((productosInsertados + productosExistentes) % 100 == 0)
+                        await cmd.ExecuteNonQueryAsync();
+                        filasInsertadas++;
+
+                        if (filasInsertadas % 100 == 0)
                         {
-                            Console.Write($"\r? Procesados: {productosInsertados + productosExistentes}/{productos.Count}");
+                            Console.Write($"\r? Procesadas: {filasInsertadas}/{dataTable.Rows.Count}");
                         }
                     }
                     catch (Exception ex)
                     {
-                        errores.Add($"Producto {producto.Id}: {ex.Message}");
+                        filasConError++;
+                        Console.Write($"\r? Fila {filasInsertadas + filasConError}: {ex.Message.Substring(0, Math.Min(50, ex.Message.Length))}");
                     }
                 }
 
-                Console.WriteLine($"\r? Migración completada: {productosInsertados} insertados | {productosExistentes} existentes");
+                Console.WriteLine($"\r? Migración completada: {filasInsertadas} insertadas | {filasConError} con error");
 
-                string mensaje = $"Migración exitosa:\n" +
-                    $"- Productos insertados: {productosInsertados}\n" +
-                    $"- Productos existentes: {productosExistentes}";
+                string mensaje = $"Migración exitosa a MariaDB:\n" +
+                    $"- Base de datos: {DATABASE_NAME}\n" +
+                    $"- Tabla: {TABLE_NAME}\n" +
+                    $"- Filas insertadas: {filasInsertadas}\n" +
+                    $"- Columnas: {dataTable.Columns.Count}";
 
-                if (errores.Count > 0)
+                if (filasConError > 0)
                 {
-                    mensaje += $"\n- Errores: {errores.Count}";
+                    mensaje += $"\n- Filas con error: {filasConError}";
                 }
 
                 return (true, mensaje);
             }
-            catch (MySqlException ex)
+            catch (MySqlException ex) when (ex.Message.Contains("Unable to connect"))
             {
-                return (false, $"Error de MariaDB: {ex.Message}");
+                return (false, "Error de conexión: No se pudo conectar a MariaDB.\nVerifica que el servidor esté en ejecución.");
             }
-            catch (Exception ex)
+            catch (MySqlException ex) when (ex.Message.Contains("Access denied"))
             {
-                return (false, $"Error: {ex.Message}");
-            }
-        }
-
-        /// <summary>
-        /// Sincroniza un único producto a MariaDB.
-        /// </summary>
-        public async Task<(bool Success, string Message)> SincronizarProductoAsync(ProductoPrimordial producto)
-        {
-            try
-            {
-                if (string.IsNullOrEmpty(producto.Id))
-                {
-                    return (false, "El ID del producto no puede estar vacío.");
-                }
-
-                var builder = new MySqlConnectionStringBuilder(connectionString)
-                {
-                    Database = BaseDatos,
-                    SslMode = MySqlSslMode.None
-                };
-
-                using var connection = new MySqlConnection(builder.ConnectionString);
-                await connection.OpenAsync();
-
-                string insert = @"
-                INSERT INTO Producto (Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario)
-                VALUES (@Id, @Nombre, @Categoria, @Valor, @Cantidad, @PrecioUnitario)
-                ON DUPLICATE KEY UPDATE
-                    Nombre = @Nombre,
-                    Categoria = @Categoria,
-                    Valor = @Valor,
-                    Cantidad = @Cantidad,
-                    PrecioUnitario = @PrecioUnitario";
-
-                using var cmd = new MySqlCommand(insert, connection);
-                cmd.Parameters.AddWithValue("@Id", producto.Id);
-                cmd.Parameters.AddWithValue("@Nombre", producto.Nombre ?? "");
-                cmd.Parameters.AddWithValue("@Categoria", producto.Categoria ?? "");
-                cmd.Parameters.AddWithValue("@Valor", producto.Valor);
-                cmd.Parameters.AddWithValue("@Cantidad", producto.Cantidad);
-                cmd.Parameters.AddWithValue("@PrecioUnitario", producto.PrecioUnitario);
-
-                int rowsAffected = await cmd.ExecuteNonQueryAsync();
-
-                if (rowsAffected > 0)
-                {
-                    return (true, $"? Producto {producto.Id} sincronizado correctamente");
-                }
-                else
-                {
-                    return (false, $"No se pudo sincronizar el producto {producto.Id}");
-                }
+                return (false, "Error de autenticación: Credenciales incorrectas.\nVerifica el usuario y contraseña.");
             }
             catch (MySqlException ex)
             {
@@ -159,54 +114,65 @@ namespace Conexion_Servidores_LINQ
             }
             catch (Exception ex)
             {
-                return (false, $"Error: {ex.Message}");
+                return (false, $"Error inesperado: {ex.Message}");
             }
         }
 
         /// <summary>
-        /// Crea la base de datos y la tabla de productos en MariaDB.
+        /// Crea la base de datos y tabla dinámica basada en el DataTable.
         /// </summary>
-        public async Task<(bool Success, string Message)> CrearTablaEnMariaDB()
+        private async Task<(bool Success, string Message)> CrearTablaDeMariaDB(DataTable dataTable)
         {
             try
             {
                 using var connection = new MySqlConnection(connectionString);
                 await connection.OpenAsync();
 
-                // Crear base de datos
-                string crearDB = $"CREATE DATABASE IF NOT EXISTS `{BaseDatos}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
+                // Crear base de datos si no existe
+                string crearDB = $"CREATE DATABASE IF NOT EXISTS `{DATABASE_NAME}` CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci;";
 
                 using (var cmd = new MySqlCommand(crearDB, connection))
                 {
                     await cmd.ExecuteNonQueryAsync();
                 }
 
-                connection.ChangeDatabase(BaseDatos);
+                var builder = new MySqlConnectionStringBuilder(connectionString)
+                {
+                    Database = DATABASE_NAME,
+                    SslMode = MySqlSslMode.Disabled
+                };
 
-                // Crear tabla de productos
-                string crearTabla = @"
-                CREATE TABLE IF NOT EXISTS Producto (
-                    Id VARCHAR(50) PRIMARY KEY,
-                    Nombre VARCHAR(255) NOT NULL,
-                    Categoria VARCHAR(100),
-                    Valor DECIMAL(18, 2) NOT NULL,
-                    Cantidad INT NOT NULL,
-                    PrecioUnitario DECIMAL(18, 2) NOT NULL,
-                    FechaCreacion TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-                    INDEX idx_categoria (Categoria),
-                    INDEX idx_nombre (Nombre)
+                connection.Close();
+
+                using var connectionDB = new MySqlConnection(builder.ConnectionString);
+                await connectionDB.OpenAsync();
+
+                // Construir definición de columnas basada en DataTable
+                var columnDefinitions = new List<string>();
+                foreach (DataColumn col in dataTable.Columns)
+                {
+                    string sqlType = ObtenerTipoMariaDB(col.DataType);
+                    columnDefinitions.Add($"`{col.ColumnName}` {sqlType}");
+                }
+
+                string columnList = string.Join(",\n                    ", columnDefinitions);
+
+                // Crear tabla dinámica
+                string crearTabla = $@"
+                CREATE TABLE IF NOT EXISTS `{TABLE_NAME}` (
+                    {columnList}
                 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci;";
 
-                using (var cmd = new MySqlCommand(crearTabla, connection))
+                using (var cmd = new MySqlCommand(crearTabla, connectionDB))
                 {
                     await cmd.ExecuteNonQueryAsync();
                 }
 
-                return (true, "Base de datos y tabla creadas correctamente");
+                return (true, $"Tabla dinámica '{TABLE_NAME}' creada correctamente con {dataTable.Columns.Count} columnas");
             }
             catch (MySqlException ex)
             {
-                return (false, $"Error de MariaDB: {ex.Message}");
+                return (false, $"Error al crear tabla en MariaDB: {ex.Message}");
             }
             catch (Exception ex)
             {
@@ -215,94 +181,134 @@ namespace Conexion_Servidores_LINQ
         }
 
         /// <summary>
-        /// Obtiene todos los productos desde MariaDB.
+        /// Mapea tipos de datos .NET a tipos MariaDB.
         /// </summary>
-        public async Task<List<ProductoPrimordial>> ObtenerProductosDeMariaDB()
+        private static string ObtenerTipoMariaDB(Type dotNetType)
         {
-            var productos = new List<ProductoPrimordial>();
-
-            try
+            return dotNetType switch
             {
-                var builder = new MySqlConnectionStringBuilder(connectionString)
-                {
-                    Database = BaseDatos,
-                    SslMode = MySqlSslMode.None
-                };
-
-                using var connection = new MySqlConnection(builder.ConnectionString);
-                await connection.OpenAsync();
-
-                string query = "SELECT Id, Nombre, Categoria, Valor, Cantidad, PrecioUnitario FROM Producto ORDER BY Id";
-
-                using var cmd = new MySqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
-
-                while (await reader.ReadAsync())
-                {
-                    productos.Add(new ProductoPrimordial
-                    {
-                        Id = reader["Id"].ToString(),
-                        Nombre = reader["Nombre"].ToString(),
-                        Categoria = reader["Categoria"].ToString(),
-                        Valor = Convert.ToDecimal(reader["Valor"]),
-                        Cantidad = Convert.ToInt32(reader["Cantidad"]),
-                        PrecioUnitario = Convert.ToDecimal(reader["PrecioUnitario"])
-                    });
-                }
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"Error al obtener productos: {ex.Message}");
-            }
-
-            return productos;
+                _ when dotNetType == typeof(int) => "INT",
+                _ when dotNetType == typeof(long) => "BIGINT",
+                _ when dotNetType == typeof(short) => "SMALLINT",
+                _ when dotNetType == typeof(byte) => "TINYINT",
+                _ when dotNetType == typeof(decimal) => "DECIMAL(18, 2)",
+                _ when dotNetType == typeof(double) => "DOUBLE",
+                _ when dotNetType == typeof(float) => "FLOAT",
+                _ when dotNetType == typeof(bool) => "BOOLEAN",
+                _ when dotNetType == typeof(DateTime) => "DATETIME",
+                _ when dotNetType == typeof(Guid) => "CHAR(36)",
+                _ => "VARCHAR(255)"
+            };
         }
 
         /// <summary>
-        /// Obtiene estadísticas de la tabla de productos.
+        /// Obtiene toda la tabla importada de MariaDB como DataTable completo.
         /// </summary>
-        public async Task<(int Total, decimal ValorTotal, int CantidadTotal)> ObtenerEstadisticasAsync()
+        public async Task<(bool Success, DataTable Datos, string Message)> ObtenerTablaCompletaAsync()
         {
             try
             {
                 var builder = new MySqlConnectionStringBuilder(connectionString)
                 {
-                    Database = BaseDatos,
-                    SslMode = MySqlSslMode.None
+                    Database = DATABASE_NAME,
+                    SslMode = MySqlSslMode.Disabled
                 };
 
                 using var connection = new MySqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string query = @"
-                SELECT 
-                    COUNT(*) as Total,
-                    COALESCE(SUM(Valor), 0) as ValorTotal,
-                    COALESCE(SUM(Cantidad), 0) as CantidadTotal
-                FROM Producto";
+                string query = $"SELECT * FROM `{TABLE_NAME}`";
+
+                var resultados = new DataTable();
+                using var adapter = new MySqlDataAdapter(query, connection);
+                adapter.Fill(resultados);
+
+                if (resultados.Rows.Count == 0)
+                {
+                    return (false, resultados, "No hay datos en la tabla importada.");
+                }
+
+                string mensaje = $"Tabla '{TABLE_NAME}' obtenida correctamente:\n" +
+                    $"- Filas: {resultados.Rows.Count}\n" +
+                    $"- Columnas: {resultados.Columns.Count}";
+
+                return (true, resultados, mensaje);
+            }
+            catch (Exception ex)
+            {
+                return (false, new DataTable(), $"Error al obtener tabla: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Obtiene todos los datos de la tabla importada como DataTable.
+        /// </summary>
+        public async Task<DataTable> ObtenerDatosDeMariaDB()
+        {
+            var resultados = new DataTable();
+
+            try
+            {
+                var builder = new MySqlConnectionStringBuilder(connectionString)
+                {
+                    Database = DATABASE_NAME,
+                    SslMode = MySqlSslMode.Disabled
+                };
+
+                using var connection = new MySqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string query = $"SELECT * FROM `{TABLE_NAME}`";
+
+                using var adapter = new MySqlDataAdapter(query, connection);
+                adapter.Fill(resultados);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error al obtener datos de MariaDB: {ex.Message}");
+            }
+
+            return resultados;
+        }
+
+        /// <summary>
+        /// Obtiene estadísticas de la tabla importada.
+        /// </summary>
+        public async Task<(int TotalFilas, int TotalColumnas)> ObtenerEstadisticasAsync()
+        {
+            try
+            {
+                var builder = new MySqlConnectionStringBuilder(connectionString)
+                {
+                    Database = DATABASE_NAME,
+                    SslMode = MySqlSslMode.Disabled
+                };
+
+                using var connection = new MySqlConnection(builder.ConnectionString);
+                await connection.OpenAsync();
+
+                string query = $"SELECT COUNT(*) as Total FROM `{TABLE_NAME}`";
 
                 using var cmd = new MySqlCommand(query, connection);
-                using var reader = await cmd.ExecuteReaderAsync();
+                int totalFilas = Convert.ToInt32(await cmd.ExecuteScalarAsync() ?? 0);
 
-                if (await reader.ReadAsync())
-                {
-                    int total = Convert.ToInt32(reader["Total"]);
-                    decimal valorTotal = Convert.ToDecimal(reader["ValorTotal"]);
-                    int cantidadTotal = Convert.ToInt32(reader["CantidadTotal"]);
+                // Obtener total de columnas
+                query = $"SELECT COUNT(*) FROM information_schema.COLUMNS WHERE TABLE_NAME = '{TABLE_NAME}' AND TABLE_SCHEMA = '{DATABASE_NAME}'";
 
-                    return (total, valorTotal, cantidadTotal);
-                }
+                using var cmd2 = new MySqlCommand(query, connection);
+                int totalColumnas = Convert.ToInt32(await cmd2.ExecuteScalarAsync() ?? 0);
+
+                return (totalFilas, totalColumnas);
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"Error al obtener estadísticas: {ex.Message}");
+                return (0, 0);
             }
-
-            return (0, 0, 0);
         }
 
         /// <summary>
-        /// Elimina todos los datos de la tabla de productos.
+        /// Elimina todos los datos de la tabla importada.
         /// </summary>
         public async Task<(bool Success, string Message)> LimpiarTablaAsync()
         {
@@ -310,14 +316,14 @@ namespace Conexion_Servidores_LINQ
             {
                 var builder = new MySqlConnectionStringBuilder(connectionString)
                 {
-                    Database = BaseDatos,
-                    SslMode = MySqlSslMode.None
+                    Database = DATABASE_NAME,
+                    SslMode = MySqlSslMode.Disabled
                 };
 
                 using var connection = new MySqlConnection(builder.ConnectionString);
                 await connection.OpenAsync();
 
-                string delete = "TRUNCATE TABLE Producto";
+                string delete = $"TRUNCATE TABLE `{TABLE_NAME}`";
 
                 using var cmd = new MySqlCommand(delete, connection);
                 await cmd.ExecuteNonQueryAsync();
@@ -327,6 +333,30 @@ namespace Conexion_Servidores_LINQ
             catch (Exception ex)
             {
                 return (false, $"Error al limpiar tabla: {ex.Message}");
+            }
+        }
+
+        /// <summary>
+        /// Elimina la base de datos completa de MariaDB.
+        /// </summary>
+        public async Task<(bool Success, string Message)> EliminarBaseDatosAsync()
+        {
+            try
+            {
+                using var connection = new MySqlConnection(connectionString);
+                await connection.OpenAsync();
+
+                string delete = $"DROP DATABASE IF EXISTS `{DATABASE_NAME}`";
+
+                using var cmd = new MySqlCommand(delete, connection);
+                cmd.CommandTimeout = 60;
+                await cmd.ExecuteNonQueryAsync();
+
+                return (true, $"Base de datos '{DATABASE_NAME}' eliminada correctamente");
+            }
+            catch (Exception ex)
+            {
+                return (false, $"Error al eliminar base de datos: {ex.Message}");
             }
         }
     }
